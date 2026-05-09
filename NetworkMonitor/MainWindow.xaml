@@ -1,0 +1,271 @@
+<Window x:Class="NetworkMonitor.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="clr-namespace:NetworkMonitor.ViewModels"
+        xmlns:conv="clr-namespace:NetworkMonitor.Converters"
+        xmlns:lvc="clr-namespace:LiveChartsCore.SkiaSharpView.WPF;assembly=LiveChartsCore.SkiaSharpView.WPF"
+        Title="NetworkShow - сетевой мониторинг трафика" Height="820" Width="1400"
+        WindowStartupLocation="CenterScreen">
+    <Window.DataContext>
+        <vm:MainViewModel />
+    </Window.DataContext>
+    <Window.Resources>
+        <conv:InverseBoolConverter x:Key="InverseBoolConverter" />
+        <conv:BytesConverter x:Key="BytesConverter" />
+    </Window.Resources>
+
+    <DockPanel LastChildFill="True"
+               TextElement.Foreground="{StaticResource ForegroundBrush}"
+               TextElement.FontFamily="Segoe UI"
+               Background="{StaticResource BgBrush}">
+
+        <!-- Top toolbar -->
+        <Border DockPanel.Dock="Top" Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource BorderBrush}"
+                BorderThickness="0,0,0,1" Padding="12,8">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <TextBlock Grid.Column="0" Text="Network Monitor" FontSize="16" FontWeight="Bold"
+                           Foreground="{StaticResource ForegroundBrush}" VerticalAlignment="Center" Margin="0,0,16,0" />
+
+                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                    <TextBlock Text="Интерфейс:" VerticalAlignment="Center" Margin="0,0,6,0" Foreground="{StaticResource MutedBrush}" />
+                    <ComboBox Width="320" ItemsSource="{Binding Interfaces}" SelectedItem="{Binding SelectedInterface}" />
+                    <Button Content="Запустить" Command="{Binding StartCommand}" Margin="8,0,4,0"
+                            IsEnabled="{Binding IsCapturing, Converter={StaticResource InverseBoolConverter}}" />
+                    <Button Content="Стоп" Command="{Binding StopCommand}" Style="{StaticResource DangerButton}"
+                            IsEnabled="{Binding IsCapturing}" />
+                    <Button Content="Пауза" Command="{Binding TogglePauseCommand}" Style="{StaticResource GhostButton}"
+                            Margin="4,0,0,0" IsEnabled="{Binding IsCapturing}" />
+                    <Button Content="Очистить" Command="{Binding ClearCommand}" Style="{StaticResource GhostButton}" Margin="4,0,0,0" />
+                    <Button Content="Экспорт" Command="{Binding ExportCommand}" Style="{StaticResource GhostButton}" Margin="4,0,0,0" />
+                </StackPanel>
+
+                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                    <TextBlock Text="Лог:" VerticalAlignment="Center" Margin="8,0,4,0" Foreground="{StaticResource MutedBrush}" />
+                    <CheckBox IsChecked="{Binding LogToFile}" Content="вкл" VerticalAlignment="Center" Margin="0,0,8,0" />
+                    <ComboBox Width="80" ItemsSource="{Binding LogFormatOptions}" SelectedItem="{Binding LogFormat}" />
+                    <Button Content="Тема" Command="{Binding ToggleThemeCommand}" Style="{StaticResource GhostButton}" Margin="8,0,0,0"
+                            ToolTip="Переключить тему (тёмная / светлая)" />
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- Status bar -->
+        <Border DockPanel.Dock="Bottom" Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource BorderBrush}"
+                BorderThickness="0,1,0,0" Padding="12,6">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0" Text="{Binding StatusText}" Foreground="{StaticResource MutedBrush}" />
+                <StackPanel Grid.Column="1" Orientation="Horizontal">
+                    <TextBlock Text="Соединения: " Foreground="{StaticResource MutedBrush}" />
+                    <TextBlock Text="{Binding ConnectionCount}" Margin="0,0,12,0" />
+                    <TextBlock Text="Пакеты: " Foreground="{StaticResource MutedBrush}" />
+                    <TextBlock Text="{Binding TotalPackets}" Margin="0,0,12,0" />
+                    <TextBlock Text="Потеряно: " Foreground="{StaticResource MutedBrush}" />
+                    <TextBlock Text="{Binding DroppedPackets}" />
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- Main content -->
+        <Grid Margin="10">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="280" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+
+            <!-- Sidebar -->
+            <ScrollViewer Grid.Column="0" VerticalScrollBarVisibility="Auto">
+                <StackPanel Margin="0,0,10,0">
+
+                    <GroupBox Header="Статистика">
+                        <StackPanel>
+                            <Grid Margin="0,0,0,6">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="Скорость in" Foreground="{StaticResource MutedBrush}" />
+                                <TextBlock Grid.Column="1" Text="{Binding SpeedInText}" FontWeight="Bold" />
+                            </Grid>
+                            <Grid Margin="0,0,0,6">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="Скорость out" Foreground="{StaticResource MutedBrush}" />
+                                <TextBlock Grid.Column="1" Text="{Binding SpeedOutText}" FontWeight="Bold" />
+                            </Grid>
+                            <Grid Margin="0,0,0,6">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="Всего in" Foreground="{StaticResource MutedBrush}" />
+                                <TextBlock Grid.Column="1" Text="{Binding TotalBytesInText}" />
+                            </Grid>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="Всего out" Foreground="{StaticResource MutedBrush}" />
+                                <TextBlock Grid.Column="1" Text="{Binding TotalBytesOutText}" />
+                            </Grid>
+                        </StackPanel>
+                    </GroupBox>
+
+                    <GroupBox Header="Фильтры">
+                        <StackPanel>
+                            <TextBlock Text="Поиск" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,2" />
+                            <TextBox Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged, Delay=200}" Margin="0,0,0,8" />
+
+                            <TextBlock Text="IP содержит" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,2" />
+                            <TextBox Text="{Binding IpFilter, UpdateSourceTrigger=PropertyChanged, Delay=200}" Margin="0,0,0,8" />
+
+                            <TextBlock Text="Диапазон IP (от → до)" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,2" />
+                            <Grid Margin="0,0,0,8">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="6" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <TextBox Grid.Column="0" Text="{Binding IpRangeFrom, UpdateSourceTrigger=PropertyChanged, Delay=200}" />
+                                <TextBox Grid.Column="2" Text="{Binding IpRangeTo, UpdateSourceTrigger=PropertyChanged, Delay=200}" />
+                            </Grid>
+
+                            <TextBlock Text="Процесс" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,2" />
+                            <TextBox Text="{Binding ProcessFilter, UpdateSourceTrigger=PropertyChanged, Delay=200}" Margin="0,0,0,8" />
+
+                            <TextBlock Text="Протокол" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,2" />
+                            <ComboBox ItemsSource="{Binding ProtocolOptions}" SelectedItem="{Binding ProtocolFilter}" Margin="0,0,0,8" />
+
+                            <TextBlock Text="Зона" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,2" />
+                            <ComboBox ItemsSource="{Binding ScopeOptions}" SelectedItem="{Binding ScopeFilter}" Margin="0,0,0,8" />
+
+                            <CheckBox IsChecked="{Binding HideUnknownProcess}" Content="Скрыть unknown" Margin="0,0,0,8" />
+
+                            <TextBlock Text="Группировка" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,2" />
+                            <ComboBox ItemsSource="{Binding GroupingOptions}" SelectedItem="{Binding SelectedGrouping}" Margin="0,0,0,8" />
+
+                            <StackPanel Orientation="Horizontal">
+                                <Button Content="ЧС" Command="{Binding AddBlacklistCommand}" Style="{StaticResource DangerButton}" Margin="0,0,4,0"
+                                        ToolTip="Добавить IP из поля 'IP содержит' в чёрный список" />
+                                <Button Content="БС" Command="{Binding AddWhitelistCommand}" Style="{StaticResource GhostButton}"
+                                        ToolTip="Добавить IP из поля 'IP содержит' в белый список" />
+                            </StackPanel>
+                        </StackPanel>
+                    </GroupBox>
+
+                    <GroupBox Header="Топ IP (по объёму)">
+                        <ItemsControl ItemsSource="{Binding TopIps}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Grid Margin="0,2">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="{Binding Key}" TextTrimming="CharacterEllipsis" />
+                                        <TextBlock Grid.Column="1" Text="{Binding Display}" Foreground="{StaticResource AccentBrush}" />
+                                    </Grid>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </GroupBox>
+
+                    <GroupBox Header="Топ процессов">
+                        <ItemsControl ItemsSource="{Binding TopProcesses}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Grid Margin="0,2">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="{Binding Key}" TextTrimming="CharacterEllipsis" />
+                                        <TextBlock Grid.Column="1" Text="{Binding Display}" Foreground="{StaticResource AccentBrush}" />
+                                    </Grid>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </GroupBox>
+
+                </StackPanel>
+            </ScrollViewer>
+
+            <!-- Tabs -->
+            <TabControl Grid.Column="1">
+                <TabItem Header="Соединения">
+                    <DataGrid ItemsSource="{Binding ConnectionsView}">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="Зона" Binding="{Binding ScopeText}" Width="80" />
+                            <DataGridTextColumn Header="Процесс" Binding="{Binding ProcessName}" Width="140" />
+                            <DataGridTextColumn Header="PID" Binding="{Binding ProcessId}" Width="60" />
+                            <DataGridTextColumn Header="Proto" Binding="{Binding Protocol}" Width="60" />
+                            <DataGridTextColumn Header="Сервис" Binding="{Binding Service}" Width="90" />
+                            <DataGridTextColumn Header="Приложение" Binding="{Binding AppLabel}" Width="120" />
+                            <DataGridTextColumn Header="Локальный" Binding="{Binding LocalEndpoint}" Width="170" />
+                            <DataGridTextColumn Header="Удалённый" Binding="{Binding RemoteEndpoint}" Width="180" />
+                            <DataGridTextColumn Header="SNI / Хост" Binding="{Binding SniOrHost}" Width="*" />
+                            <DataGridTextColumn Header="Пакеты" Binding="{Binding Packets}" Width="80" />
+                            <DataGridTextColumn Header="↓" Binding="{Binding BytesIn, Converter={StaticResource BytesConverter}}" Width="90" />
+                            <DataGridTextColumn Header="↑" Binding="{Binding BytesOut, Converter={StaticResource BytesConverter}}" Width="90" />
+                            <DataGridTextColumn Header="Всего" Binding="{Binding Bytes, Converter={StaticResource BytesConverter}}" Width="100" />
+                            <DataGridTextColumn Header="Последний" Binding="{Binding LastSeen, StringFormat=HH:mm:ss}" Width="100" />
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </TabItem>
+
+                <TabItem Header="IP-адреса">
+                    <DataGrid ItemsSource="{Binding RemoteIpsView}">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="IP" Binding="{Binding Ip}" Width="140" />
+                            <DataGridTextColumn Header="Хост (DNS)" Binding="{Binding RemoteHost}" Width="220" />
+                            <DataGridTextColumn Header="Зона" Binding="{Binding ScopeText}" Width="90" />
+                            <DataGridTextColumn Header="Соединений" Binding="{Binding Connections}" Width="100" />
+                            <DataGridTextColumn Header="Пакеты" Binding="{Binding Packets}" Width="80" />
+                            <DataGridTextColumn Header="↓" Binding="{Binding BytesIn, Converter={StaticResource BytesConverter}}" Width="100" />
+                            <DataGridTextColumn Header="↑" Binding="{Binding BytesOut, Converter={StaticResource BytesConverter}}" Width="100" />
+                            <DataGridTextColumn Header="Всего" Binding="{Binding Bytes, Converter={StaticResource BytesConverter}}" Width="100" />
+                            <DataGridTextColumn Header="Процесс" Binding="{Binding TopProcess}" Width="*" />
+                            <DataGridTextColumn Header="PID" Binding="{Binding TopProcessId}" Width="60" />
+                            <DataGridTextColumn Header="Первый" Binding="{Binding FirstSeen, StringFormat=HH:mm:ss}" Width="90" />
+                            <DataGridTextColumn Header="Последний" Binding="{Binding LastSeen, StringFormat=HH:mm:ss}" Width="90" />
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </TabItem>
+
+                <TabItem Header="Скорость">
+                    <Border Style="{StaticResource Card}">
+                        <lvc:CartesianChart Series="{Binding SpeedSeries}"
+                                            XAxes="{Binding SpeedXAxes}"
+                                            YAxes="{Binding SpeedYAxes}"
+                                            LegendPosition="Top"
+                                            ZoomMode="None" />
+                    </Border>
+                </TabItem>
+
+                <TabItem Header="Уведомления">
+                    <DataGrid ItemsSource="{Binding Notifications}">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="Время" Binding="{Binding TimeText}" Width="90" />
+                            <DataGridTextColumn Header="Уровень" Binding="{Binding SeverityText}" Width="100" />
+                            <DataGridTextColumn Header="Заголовок" Binding="{Binding Title}" Width="220" />
+                            <DataGridTextColumn Header="Сообщение" Binding="{Binding Message}" Width="*" />
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </TabItem>
+            </TabControl>
+        </Grid>
+
+    </DockPanel>
+</Window>

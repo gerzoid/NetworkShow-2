@@ -1,0 +1,584 @@
+using System;
+using System.Collections.Generic;
+using System.Collections.ObjectModel;
+using System.ComponentModel;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+using System.Windows.Data;
+using System.Windows.Threading;
+using CommunityToolkit.Mvvm.ComponentModel;
+using CommunityToolkit.Mvvm.Input;
+using LiveChartsCore;
+using LiveChartsCore.Defaults;
+using LiveChartsCore.SkiaSharpView;
+using LiveChartsCore.SkiaSharpView.Painting;
+using NetworkMonitor.Helpers;
+using NetworkMonitor.Models;
+using NetworkMonitor.Services;
+using SkiaSharp;
+
+namespace NetworkMonitor.ViewModels;
+
+public sealed partial class MainViewModel : ObservableObject, IDisposable
+{
+    private readonly ProcessResolverService _processResolver;
+    private readonly PacketCaptureService _captureService;
+    private readonly AggregationService _aggregation;
+    private readonly NotificationService _notifications;
+    private readonly LoggingService _logging;
+    private readonly DnsResolverService _dns;
+    private readonly Dispatcher _dispatcher;
+    private readonly DispatcherTimer _uiTimer;
+    private CancellationTokenSource? _consumerCts;
+    private Task? _consumerTask;
+
+    private static readonly TimeSpan ConnectionInactivityTimeout = TimeSpan.FromMinutes(10);
+
+    private readonly HashSet<string> _connectionKeys = new();
+    private readonly Dictionary<string, List<ConnectionAggregate>> _byRemoteIp = new();
+    private readonly Dictionary<string, RemoteIpAggregate> _ipIndex = new();
+    private readonly ObservableCollection<TrafficNotification> _notificationItems = new();
+    private int _inactivityRefreshCounter;
+
+    public ObservableCollection<ConnectionAggregate> Connections { get; } = new();
+    public ICollectionView ConnectionsView { get; }
+    public ObservableCollection<RemoteIpAggregate> RemoteIps { get; } = new();
+    public ICollectionView RemoteIpsView { get; }
+    public ObservableCollection<TrafficNotification> Notifications => _notificationItems;
+    public ObservableCollection<NetworkInterfaceInfo> Interfaces { get; } = new();
+    public ObservableCollection<TopEntry> TopIps { get; } = new();
+    public ObservableCollection<TopEntry> TopProcesses { get; } = new();
+
+    public string[] ProtocolOptions { get; } = { "All", "TCP", "UDP" };
+    public string[] ScopeOptions { get; } = { "Все", "Только локальный", "Только внешний" };
+    public string[] GroupingOptions { get; } = { "Без группировки", "По процессу", "По удалённому хосту", "По протоколу", "По зоне" };
+    public LogFormat[] LogFormatOptions { get; } = { LogFormat.Json, LogFormat.Csv };
+
+    [ObservableProperty]
+    private NetworkInterfaceInfo? selectedInterface;
+
+    [ObservableProperty]
+    private bool isCapturing;
+
+    [ObservableProperty]
+    private bool isPaused;
+
+    [ObservableProperty]
+    private long totalPackets;
+
+    [ObservableProperty]
+    private string totalBytesInText = "0 B";
+
+    [ObservableProperty]
+    private string totalBytesOutText = "0 B";
+
+    [ObservableProperty]
+    private string speedInText = "0 B/c";
+
+    [ObservableProperty]
+    private string speedOutText = "0 B/c";
+
+    [ObservableProperty]
+    private string statusText = "Готов. Запустите захват, выбрав интерфейс.";
+
+    [ObservableProperty]
+    private string searchText = string.Empty;
+
+    [ObservableProperty]
+    private string ipFilter = string.Empty;
+
+    [ObservableProperty]
+    private string ipRangeFrom = string.Empty;
+
+    [ObservableProperty]
+    private string ipRangeTo = string.Empty;
+
+    [ObservableProperty]
+    private string processFilter = string.Empty;
+
+    [ObservableProperty]
+    private string protocolFilter = "All";
+
+    [ObservableProperty]
+    private bool hideUnknownProcess;
+
+    [ObservableProperty]
+    private string scopeFilter = "Все";
+
+    [ObservableProperty]
+    private string selectedGrouping = "Без группировки";
+
+    [ObservableProperty]
+    private bool logToFile;
+
+    [ObservableProperty]
+    private LogFormat logFormat = LogFormat.Json;
+
+    [ObservableProperty]
+    private long droppedPackets;
+
+    [ObservableProperty]
+    private int connectionCount;
+
+    public ObservableCollection<ISeries> SpeedSeries { get; }
+    public ObservableCollection<Axis> SpeedXAxes { get; }
+    public ObservableCollection<Axis> SpeedYAxes { get; }
+
+    private readonly ObservableCollection<DateTimePoint> _speedInPoints = new();
+    private readonly ObservableCollection<DateTimePoint> _speedOutPoints = new();
+
+    public MainViewModel()
+    {
+        _dispatcher = Dispatcher.CurrentDispatcher;
+        _processResolver = new ProcessResolverService();
+        _captureService = new PacketCaptureService(_processResolver);
+        _aggregation = new AggregationService();
+        _notifications = new NotificationService();
+        _logging = new LoggingService();
+        _dns = new DnsResolverService();
+
+        _captureService.CaptureError += (_, msg) => _dispatcher.BeginInvoke(() => StatusText = msg);
+        _notifications.NotificationRaised += OnNotificationRaised;
+        _aggregation.ConnectionCreated += OnConnectionCreated;
+        _aggregation.RemoteIpCreated += OnRemoteIpCreated;
+        _dns.Resolved += OnDnsResolved;
+
+        ConnectionsView = CollectionViewSource.GetDefaultView(Connections);
+        ConnectionsView.Filter = FilterConnection;
+        ConnectionsView.SortDescriptions.Add(new SortDescription(nameof(ConnectionAggregate.LastSeen), ListSortDirection.Descending));
+
+        RemoteIpsView = CollectionViewSource.GetDefaultView(RemoteIps);
+        RemoteIpsView.SortDescriptions.Add(new SortDescription(nameof(RemoteIpAggregate.Bytes), ListSortDirection.Descending));
+
+        SpeedSeries = new ObservableCollection<ISeries>
+        {
+            new LineSeries<DateTimePoint>
+            {
+                Name = "Входящий",
+                Values = _speedInPoints,
+                Fill = new SolidColorPaint(new SKColor(40, 120, 200, 80)),
+                Stroke = new SolidColorPaint(new SKColor(40, 140, 230)) { StrokeThickness = 2 },
+                GeometrySize = 0
+            },
+            new LineSeries<DateTimePoint>
+            {
+                Name = "Исходящий",
+                Values = _speedOutPoints,
+                Fill = new SolidColorPaint(new SKColor(220, 100, 80, 80)),
+                Stroke = new SolidColorPaint(new SKColor(230, 110, 90)) { StrokeThickness = 2 },
+                GeometrySize = 0
+            }
+        };
+        SpeedXAxes = new ObservableCollection<Axis>
+        {
+            new Axis
+            {
+                Labeler = v => new DateTime((long)v).ToString("HH:mm:ss"),
+                LabelsPaint = new SolidColorPaint(SKColors.LightGray),
+                SeparatorsPaint = new SolidColorPaint(new SKColor(80, 80, 80))
+            }
+        };
+        SpeedYAxes = new ObservableCollection<Axis>
+        {
+            new Axis
+            {
+                Labeler = v => ByteFormatter.FormatRate((long)v),
+                LabelsPaint = new SolidColorPaint(SKColors.LightGray),
+                SeparatorsPaint = new SolidColorPaint(new SKColor(80, 80, 80))
+            }
+        };
+
+        LoadInterfaces();
+
+        _uiTimer = new DispatcherTimer(DispatcherPriority.Background)
+        {
+            Interval = TimeSpan.FromMilliseconds(500)
+        };
+        _uiTimer.Tick += UiTick;
+        _uiTimer.Start();
+    }
+
+    public void LoadInterfaces()
+    {
+        Interfaces.Clear();
+        foreach (var i in _captureService.ListInterfaces())
+            Interfaces.Add(i);
+        if (SelectedInterface is null && Interfaces.Count > 0)
+            SelectedInterface = Interfaces[0];
+        if (Interfaces.Count == 0)
+            StatusText = "Сетевые интерфейсы не найдены. Установите Npcap (https://npcap.com).";
+    }
+
+    [RelayCommand]
+    private void Start()
+    {
+        if (IsCapturing) return;
+        if (SelectedInterface is null)
+        {
+            StatusText = "Сначала выберите сетевой интерфейс.";
+            return;
+        }
+        try
+        {
+            _captureService.Start(SelectedInterface.Name);
+            IsCapturing = true;
+            IsPaused = false;
+            StatusText = $"Захват запущен: {SelectedInterface}";
+
+            _consumerCts = new CancellationTokenSource();
+            _consumerTask = Task.Run(() => ConsumeLoop(_consumerCts.Token));
+        }
+        catch (Exception ex)
+        {
+            StatusText = $"Ошибка запуска захвата: {ex.Message}";
+        }
+    }
+
+    [RelayCommand]
+    private void Stop()
+    {
+        if (!IsCapturing) return;
+        try
+        {
+            _captureService.Stop();
+            _consumerCts?.Cancel();
+            _consumerTask?.Wait(500);
+        }
+        catch { }
+        finally
+        {
+            IsCapturing = false;
+            IsPaused = false;
+            _logging.Flush();
+            StatusText = "Захват остановлен.";
+        }
+    }
+
+    [RelayCommand]
+    private void TogglePause()
+    {
+        if (!IsCapturing) return;
+        IsPaused = !IsPaused;
+        StatusText = IsPaused ? "Пауза." : "Захват.";
+    }
+
+    [RelayCommand]
+    private void Clear()
+    {
+        Connections.Clear();
+        RemoteIps.Clear();
+        _ipIndex.Clear();
+        _connectionKeys.Clear();
+        _byRemoteIp.Clear();
+        TopIps.Clear();
+        TopProcesses.Clear();
+        _speedInPoints.Clear();
+        _speedOutPoints.Clear();
+        _aggregation.Clear();
+        TotalPackets = 0;
+        ConnectionCount = 0;
+        TotalBytesInText = "0 B";
+        TotalBytesOutText = "0 B";
+    }
+
+    [RelayCommand]
+    private void Export()
+    {
+        try
+        {
+            var snapshot = _aggregation.Connections.OrderByDescending(c => c.Bytes).ToList();
+            var path = _logging.ExportConnections(snapshot, LogFormat);
+            StatusText = $"Экспортировано: {path}";
+        }
+        catch (Exception ex)
+        {
+            StatusText = $"Ошибка экспорта: {ex.Message}";
+        }
+    }
+
+    [RelayCommand]
+    private void RefreshFilter() => ConnectionsView.Refresh();
+
+    [RelayCommand]
+    private void ToggleTheme() => Themes.ThemeManager.Toggle();
+
+    [RelayCommand]
+    private void AddBlacklist()
+    {
+        if (!string.IsNullOrWhiteSpace(IpFilter))
+        {
+            _notifications.AddToBlacklist(IpFilter.Trim());
+            StatusText = $"Добавлено в чёрный список: {IpFilter}";
+        }
+    }
+
+    [RelayCommand]
+    private void AddWhitelist()
+    {
+        if (!string.IsNullOrWhiteSpace(IpFilter))
+        {
+            _notifications.AddToWhitelist(IpFilter.Trim());
+            StatusText = $"Добавлено в белый список: {IpFilter}";
+        }
+    }
+
+    private async Task ConsumeLoop(CancellationToken token)
+    {
+        var reader = _captureService.Reader;
+        try
+        {
+            while (await reader.WaitToReadAsync(token).ConfigureAwait(false))
+            {
+                while (reader.TryRead(out var rec))
+                {
+                    if (IsPaused) continue;
+                    _aggregation.Add(rec);
+                    _notifications.Inspect(rec);
+                    if (LogToFile)
+                    {
+                        try { _logging.Format = LogFormat; _logging.Write(rec); }
+                        catch { }
+                    }
+                }
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            await _dispatcher.BeginInvoke(() => StatusText = $"Ошибка обработки: {ex.Message}");
+        }
+    }
+
+    private void OnConnectionCreated(object? sender, ConnectionAggregate conn)
+    {
+        var cached = _dns.Lookup(conn.RemoteIp);
+        if (cached is not null)
+        {
+            conn.RemoteHost = cached;
+        }
+        else
+        {
+            _dns.Enqueue(conn.RemoteIp);
+        }
+
+        _dispatcher.BeginInvoke(() =>
+        {
+            if (_connectionKeys.Add(conn.Key))
+            {
+                Connections.Add(conn);
+                if (!_byRemoteIp.TryGetValue(conn.RemoteIp, out var list))
+                {
+                    list = new List<ConnectionAggregate>();
+                    _byRemoteIp[conn.RemoteIp] = list;
+                }
+                list.Add(conn);
+
+                const int maxConn = 10_000;
+                while (Connections.Count > maxConn)
+                {
+                    var victim = Connections[0];
+                    Connections.RemoveAt(0);
+                    _connectionKeys.Remove(victim.Key);
+                    if (_byRemoteIp.TryGetValue(victim.RemoteIp, out var l))
+                    {
+                        l.Remove(victim);
+                        if (l.Count == 0) _byRemoteIp.Remove(victim.RemoteIp);
+                    }
+                }
+            }
+        });
+    }
+
+    private void OnRemoteIpCreated(object? sender, RemoteIpAggregate ip)
+    {
+        var cached = _dns.Lookup(ip.Ip);
+        if (cached is not null) ip.RemoteHost = cached;
+        else _dns.Enqueue(ip.Ip);
+
+        _dispatcher.BeginInvoke(() =>
+        {
+            if (_ipIndex.TryAdd(ip.Ip, ip))
+            {
+                RemoteIps.Add(ip);
+                const int maxIps = 5000;
+                if (RemoteIps.Count > maxIps)
+                {
+                    var victim = RemoteIps[0];
+                    RemoteIps.RemoveAt(0);
+                    _ipIndex.Remove(victim.Ip);
+                }
+            }
+        });
+    }
+
+    private void OnDnsResolved(object? sender, DnsResolvedEventArgs e)
+    {
+        _dispatcher.BeginInvoke(() =>
+        {
+            if (_byRemoteIp.TryGetValue(e.Ip, out var list))
+            {
+                foreach (var c in list)
+                    c.RemoteHost = e.Host;
+            }
+            if (_ipIndex.TryGetValue(e.Ip, out var ipAgg))
+                ipAgg.RemoteHost = e.Host;
+        });
+    }
+
+    private void OnNotificationRaised(object? sender, TrafficNotification n)
+    {
+        _dispatcher.BeginInvoke(() =>
+        {
+            _notificationItems.Insert(0, n);
+            while (_notificationItems.Count > 200) _notificationItems.RemoveAt(_notificationItems.Count - 1);
+            try { _logging.WriteNotification(n); } catch { }
+        });
+    }
+
+    private void UiTick(object? sender, EventArgs e)
+    {
+        var (bIn, bOut) = _aggregation.SampleAndResetInterval();
+        long ratePerSec = (bIn + bOut) * 2;
+        _notifications.RecordTrafficSample(ratePerSec);
+
+        SpeedInText = ByteFormatter.FormatRate(bIn * 2);
+        SpeedOutText = ByteFormatter.FormatRate(bOut * 2);
+        TotalBytesInText = ByteFormatter.Format(_aggregation.TotalBytesIn);
+        TotalBytesOutText = ByteFormatter.Format(_aggregation.TotalBytesOut);
+        TotalPackets = _aggregation.TotalPackets;
+        DroppedPackets = _captureService.DroppedPackets;
+        ConnectionCount = Connections.Count;
+
+        var now = DateTime.Now;
+        _speedInPoints.Add(new DateTimePoint(now, bIn * 2));
+        _speedOutPoints.Add(new DateTimePoint(now, bOut * 2));
+        while (_speedInPoints.Count > 120) _speedInPoints.RemoveAt(0);
+        while (_speedOutPoints.Count > 120) _speedOutPoints.RemoveAt(0);
+
+        UpdateTopLists();
+
+        if (++_inactivityRefreshCounter >= 60)
+        {
+            _inactivityRefreshCounter = 0;
+            ConnectionsView.Refresh();
+        }
+    }
+
+    private void UpdateTopLists()
+    {
+        var topIps = _aggregation.TopIps(10);
+        TopIps.Clear();
+        foreach (var t in topIps)
+        {
+            var label = string.IsNullOrEmpty(t.RemoteHost) || t.RemoteHost == t.Ip ? t.Ip : t.RemoteHost;
+            TopIps.Add(new TopEntry { Key = label, Bytes = t.Bytes, Display = ByteFormatter.Format(t.Bytes) });
+        }
+
+        var topProc = _aggregation.TopProcesses(10);
+        TopProcesses.Clear();
+        foreach (var t in topProc)
+            TopProcesses.Add(new TopEntry { Key = t.Process, Bytes = t.Bytes, Display = ByteFormatter.Format(t.Bytes) });
+    }
+
+    private bool FilterConnection(object obj)
+    {
+        if (obj is not ConnectionAggregate c) return false;
+
+        if (DateTime.Now - c.LastSeen > ConnectionInactivityTimeout)
+            return false;
+
+        if (HideUnknownProcess && (string.IsNullOrEmpty(c.ProcessName) || c.ProcessName == "unknown"))
+            return false;
+
+        if (ScopeFilter == "Только локальный" && !c.IsLocal) return false;
+        if (ScopeFilter == "Только внешний" && c.IsLocal) return false;
+
+        if (!string.IsNullOrWhiteSpace(IpFilter))
+        {
+            var f = IpFilter.Trim();
+            if (!c.LocalIp.Contains(f, StringComparison.OrdinalIgnoreCase) &&
+                !c.RemoteIp.Contains(f, StringComparison.OrdinalIgnoreCase) &&
+                !c.RemoteHost.Contains(f, StringComparison.OrdinalIgnoreCase))
+                return false;
+        }
+        if (!string.IsNullOrWhiteSpace(IpRangeFrom) && !string.IsNullOrWhiteSpace(IpRangeTo))
+        {
+            if (!IpRangeHelper.InRange(c.LocalIp, IpRangeFrom, IpRangeTo) &&
+                !IpRangeHelper.InRange(c.RemoteIp, IpRangeFrom, IpRangeTo))
+                return false;
+        }
+        if (!string.IsNullOrWhiteSpace(ProcessFilter))
+        {
+            if (!c.ProcessName.Contains(ProcessFilter.Trim(), StringComparison.OrdinalIgnoreCase))
+                return false;
+        }
+        if (!string.IsNullOrWhiteSpace(ProtocolFilter) && ProtocolFilter != "All")
+        {
+            if (!string.Equals(c.Protocol, ProtocolFilter, StringComparison.OrdinalIgnoreCase))
+                return false;
+        }
+        if (!string.IsNullOrWhiteSpace(SearchText))
+        {
+            var s = SearchText.Trim();
+            if (!c.LocalIp.Contains(s, StringComparison.OrdinalIgnoreCase) &&
+                !c.RemoteIp.Contains(s, StringComparison.OrdinalIgnoreCase) &&
+                !c.RemoteHost.Contains(s, StringComparison.OrdinalIgnoreCase) &&
+                !c.Sni.Contains(s, StringComparison.OrdinalIgnoreCase) &&
+                !c.AppLabel.Contains(s, StringComparison.OrdinalIgnoreCase) &&
+                !c.ProcessName.Contains(s, StringComparison.OrdinalIgnoreCase) &&
+                !c.Protocol.Contains(s, StringComparison.OrdinalIgnoreCase) &&
+                !c.Service.Contains(s, StringComparison.OrdinalIgnoreCase) &&
+                !c.RemotePort.ToString().Contains(s) &&
+                !c.LocalPort.ToString().Contains(s))
+                return false;
+        }
+        return true;
+    }
+
+    partial void OnSearchTextChanged(string value) => RefreshFilter();
+    partial void OnIpFilterChanged(string value) => RefreshFilter();
+    partial void OnIpRangeFromChanged(string value) => RefreshFilter();
+    partial void OnIpRangeToChanged(string value) => RefreshFilter();
+    partial void OnProcessFilterChanged(string value) => RefreshFilter();
+    partial void OnProtocolFilterChanged(string value) => RefreshFilter();
+    partial void OnHideUnknownProcessChanged(bool value) => RefreshFilter();
+    partial void OnScopeFilterChanged(string value) => RefreshFilter();
+
+    partial void OnSelectedGroupingChanged(string value)
+    {
+        ConnectionsView.GroupDescriptions.Clear();
+        switch (value)
+        {
+            case "По процессу":
+                ConnectionsView.GroupDescriptions.Add(new PropertyGroupDescription(nameof(ConnectionAggregate.ProcessName)));
+                break;
+            case "По удалённому хосту":
+                ConnectionsView.GroupDescriptions.Add(new PropertyGroupDescription(nameof(ConnectionAggregate.RemoteHostOrIp)));
+                break;
+            case "По протоколу":
+                ConnectionsView.GroupDescriptions.Add(new PropertyGroupDescription(nameof(ConnectionAggregate.Protocol)));
+                break;
+            case "По зоне":
+                ConnectionsView.GroupDescriptions.Add(new PropertyGroupDescription(nameof(ConnectionAggregate.ScopeText)));
+                break;
+        }
+    }
+
+    public void Dispose()
+    {
+        _uiTimer.Stop();
+        Stop();
+        _captureService.Dispose();
+        _processResolver.Dispose();
+        _logging.Dispose();
+        _dns.Dispose();
+    }
+}
+
+public sealed class TopEntry
+{
+    public string Key { get; init; } = string.Empty;
+    public long Bytes { get; init; }
+    public string Display { get; init; } = string.Empty;
+}
