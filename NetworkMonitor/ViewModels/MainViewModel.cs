@@ -23,6 +23,7 @@ namespace NetworkMonitor.ViewModels;
 public sealed partial class MainViewModel : ObservableObject, IDisposable
 {
     private readonly ProcessResolverService _processResolver;
+    private readonly EtwConnectionTracker _etwTracker;
     private readonly PacketCaptureService _captureService;
     private readonly AggregationService _aggregation;
     private readonly NotificationService _notifications;
@@ -30,10 +31,12 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private readonly DnsResolverService _dns;
     private readonly Dispatcher _dispatcher;
     private readonly DispatcherTimer _uiTimer;
+    private readonly Timer _pruneTimer;
     private CancellationTokenSource? _consumerCts;
     private Task? _consumerTask;
 
     private static readonly TimeSpan ConnectionInactivityTimeout = TimeSpan.FromMinutes(10);
+    private static readonly TimeSpan PruneInterval = TimeSpan.FromSeconds(30);
 
     private readonly HashSet<string> _connectionKeys = new();
     private readonly Dictionary<string, List<ConnectionAggregate>> _byRemoteIp = new();
@@ -132,6 +135,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     {
         _dispatcher = Dispatcher.CurrentDispatcher;
         _processResolver = new ProcessResolverService();
+        _etwTracker = new EtwConnectionTracker(_processResolver);
         _captureService = new PacketCaptureService(_processResolver);
         _aggregation = new AggregationService();
         _notifications = new NotificationService();
@@ -142,6 +146,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _notifications.NotificationRaised += OnNotificationRaised;
         _aggregation.ConnectionCreated += OnConnectionCreated;
         _aggregation.RemoteIpCreated += OnRemoteIpCreated;
+        _aggregation.ConnectionsPruned += OnConnectionsPruned;
+        _aggregation.RemoteIpsPruned += OnRemoteIpsPruned;
         _dns.Resolved += OnDnsResolved;
 
         ConnectionsView = CollectionViewSource.GetDefaultView(Connections);
@@ -189,7 +195,15 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             }
         };
 
+        ApplyChartTheme(Themes.ThemeManager.Current);
+        Themes.ThemeManager.ThemeChanged += (_, t) => _dispatcher.BeginInvoke(() => ApplyChartTheme(t));
+
         LoadInterfaces();
+
+        if (_etwTracker.TryStart())
+            StatusText = "Готов. ETW активен — PID-резолв в реальном времени.";
+        else
+            StatusText = $"Готов. ETW недоступен ({_etwTracker.LastError ?? "нет прав?"}) — резолв через таблицы сокетов.";
 
         _uiTimer = new DispatcherTimer(DispatcherPriority.Background)
         {
@@ -197,6 +211,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         };
         _uiTimer.Tick += UiTick;
         _uiTimer.Start();
+
+        _pruneTimer = new Timer(_ => _aggregation.Prune(ConnectionInactivityTimeout),
+            null, PruneInterval, PruneInterval);
     }
 
     public void LoadInterfaces()
@@ -373,19 +390,6 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                     _byRemoteIp[conn.RemoteIp] = list;
                 }
                 list.Add(conn);
-
-                const int maxConn = 10_000;
-                while (Connections.Count > maxConn)
-                {
-                    var victim = Connections[0];
-                    Connections.RemoveAt(0);
-                    _connectionKeys.Remove(victim.Key);
-                    if (_byRemoteIp.TryGetValue(victim.RemoteIp, out var l))
-                    {
-                        l.Remove(victim);
-                        if (l.Count == 0) _byRemoteIp.Remove(victim.RemoteIp);
-                    }
-                }
             }
         });
     }
@@ -399,15 +403,45 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _dispatcher.BeginInvoke(() =>
         {
             if (_ipIndex.TryAdd(ip.Ip, ip))
-            {
                 RemoteIps.Add(ip);
-                const int maxIps = 5000;
-                if (RemoteIps.Count > maxIps)
+        });
+    }
+
+    private void OnConnectionsPruned(object? sender, IReadOnlyList<ConnectionAggregate> removed)
+    {
+        _dispatcher.BeginInvoke(() =>
+        {
+            var keys = new HashSet<string>(removed.Count);
+            foreach (var c in removed) keys.Add(c.Key);
+
+            for (int i = Connections.Count - 1; i >= 0; i--)
+            {
+                var c = Connections[i];
+                if (!keys.Contains(c.Key)) continue;
+                Connections.RemoveAt(i);
+                _connectionKeys.Remove(c.Key);
+                if (_byRemoteIp.TryGetValue(c.RemoteIp, out var list))
                 {
-                    var victim = RemoteIps[0];
-                    RemoteIps.RemoveAt(0);
-                    _ipIndex.Remove(victim.Ip);
+                    list.Remove(c);
+                    if (list.Count == 0) _byRemoteIp.Remove(c.RemoteIp);
                 }
+            }
+        });
+    }
+
+    private void OnRemoteIpsPruned(object? sender, IReadOnlyList<RemoteIpAggregate> removed)
+    {
+        _dispatcher.BeginInvoke(() =>
+        {
+            var ips = new HashSet<string>(removed.Count);
+            foreach (var ip in removed) ips.Add(ip.Ip);
+
+            for (int i = RemoteIps.Count - 1; i >= 0; i--)
+            {
+                var ip = RemoteIps[i];
+                if (!ips.Contains(ip.Ip)) continue;
+                RemoteIps.RemoveAt(i);
+                _ipIndex.Remove(ip.Ip);
             }
         });
     }
@@ -462,6 +496,33 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         {
             _inactivityRefreshCounter = 0;
             ConnectionsView.Refresh();
+        }
+    }
+
+    private void ApplyChartTheme(Themes.AppTheme theme)
+    {
+        SKColor labelColor;
+        SKColor separatorColor;
+        if (theme == Themes.AppTheme.Light)
+        {
+            labelColor = new SKColor(0x1A, 0x1B, 0x20);
+            separatorColor = new SKColor(0xD9, 0xDB, 0xE0);
+        }
+        else
+        {
+            labelColor = new SKColor(0xF1, 0xF1, 0xF3);
+            separatorColor = new SKColor(0x3D, 0x3D, 0x45);
+        }
+
+        foreach (var axis in SpeedXAxes)
+        {
+            axis.LabelsPaint = new SolidColorPaint(labelColor);
+            axis.SeparatorsPaint = new SolidColorPaint(separatorColor);
+        }
+        foreach (var axis in SpeedYAxes)
+        {
+            axis.LabelsPaint = new SolidColorPaint(labelColor);
+            axis.SeparatorsPaint = new SolidColorPaint(separatorColor);
         }
     }
 
@@ -568,8 +629,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     public void Dispose()
     {
         _uiTimer.Stop();
+        _pruneTimer.Dispose();
         Stop();
         _captureService.Dispose();
+        _etwTracker.Dispose();
         _processResolver.Dispose();
         _logging.Dispose();
         _dns.Dispose();

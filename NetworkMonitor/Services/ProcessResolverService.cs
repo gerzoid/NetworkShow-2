@@ -4,6 +4,8 @@ using System.Diagnostics;
 using System.Net;
 using System.Runtime.InteropServices;
 using System.Threading;
+using System.Threading.Tasks;
+using NetworkMonitor.Helpers;
 
 namespace NetworkMonitor.Services;
 
@@ -15,12 +17,16 @@ public sealed class ProcessResolverService : IDisposable
     private const int UDP_TABLE_OWNER_PID = 1;
 
     private static readonly TimeSpan EntryTtl = TimeSpan.FromSeconds(60);
+    private static readonly TimeSpan MissRefreshDebounce = TimeSpan.FromMilliseconds(150);
 
     private readonly ConcurrentDictionary<string, Entry> _cache = new();
     private readonly ConcurrentDictionary<int, string> _pidNameCache = new();
+    private readonly SvchostServiceResolver _svchost = new();
     private readonly Timer _refreshTimer;
     private readonly Timer _pruneTimer;
     private readonly object _refreshLock = new();
+    private long _lastRefreshTicks;
+    private int _pendingMissRefresh;
     private volatile bool _disposed;
 
     private record struct Entry(int Pid, string Name, DateTime LastSeen);
@@ -34,19 +40,44 @@ public sealed class ProcessResolverService : IDisposable
 
     public (int Pid, string Name) ResolveConnection(string protocol, string srcIp, int srcPort, string dstIp, int dstPort)
     {
-        if (TryGet(protocol, srcIp, srcPort, out var v)) return (v.Pid, v.Name);
-        if (TryGet(protocol, dstIp, dstPort, out v)) return (v.Pid, v.Name);
-        if (TryGet(protocol, "0.0.0.0", srcPort, out v)) return (v.Pid, v.Name);
-        if (TryGet(protocol, "0.0.0.0", dstPort, out v)) return (v.Pid, v.Name);
-        if (TryGet(protocol, "::", srcPort, out v)) return (v.Pid, v.Name);
-        if (TryGet(protocol, "::", dstPort, out v)) return (v.Pid, v.Name);
+        if (TryResolveAll(protocol, srcIp, srcPort, dstIp, dstPort, out var hit))
+            return (hit.Pid, hit.Name);
+
+        TriggerMissRefresh();
+
+        if (TryResolveAll(protocol, srcIp, srcPort, dstIp, dstPort, out hit))
+            return (hit.Pid, hit.Name);
+
+        var guess = PortServiceCatalog.LookupPair(protocol, srcPort, dstPort);
+        if (!string.IsNullOrEmpty(guess))
+            return (0, "~" + guess);
+
         return (0, "unknown");
+    }
+
+    private bool TryResolveAll(string protocol, string srcIp, int srcPort, string dstIp, int dstPort, out Entry entry)
+    {
+        if (TryGet(protocol, srcIp, srcPort, out entry)) return true;
+        if (TryGet(protocol, dstIp, dstPort, out entry)) return true;
+        if (TryGet(protocol, "0.0.0.0", srcPort, out entry)) return true;
+        if (TryGet(protocol, "0.0.0.0", dstPort, out entry)) return true;
+        if (TryGet(protocol, "::", srcPort, out entry)) return true;
+        if (TryGet(protocol, "::", dstPort, out entry)) return true;
+        return false;
     }
 
     private bool TryGet(string protocol, string ip, int port, out Entry entry)
     {
         var key = MakeKey(protocol, ip, port);
         return _cache.TryGetValue(key, out entry);
+    }
+
+    public void Upsert(string protocol, string ip, int port, int pid)
+    {
+        if (pid <= 0 || port <= 0 || string.IsNullOrEmpty(ip)) return;
+        var name = PidToName(pid);
+        var key = MakeKey(protocol, ip, port);
+        _cache[key] = new Entry(pid, name, DateTime.UtcNow);
     }
 
     public void Refresh()
@@ -59,11 +90,27 @@ public sealed class ProcessResolverService : IDisposable
             try { LoadTcpTable(AF_INET6); } catch { }
             try { LoadUdpTable(AF_INET); } catch { }
             try { LoadUdpTable(AF_INET6); } catch { }
+            Interlocked.Exchange(ref _lastRefreshTicks, DateTime.UtcNow.Ticks);
         }
         finally
         {
             Monitor.Exit(_refreshLock);
         }
+    }
+
+    private void TriggerMissRefresh()
+    {
+        if (_disposed) return;
+        var lastTicks = Interlocked.Read(ref _lastRefreshTicks);
+        var ageTicks = DateTime.UtcNow.Ticks - lastTicks;
+        if (ageTicks < MissRefreshDebounce.Ticks) return;
+        if (Interlocked.Exchange(ref _pendingMissRefresh, 1) == 1) return;
+
+        Task.Run(() =>
+        {
+            try { Refresh(); }
+            finally { Interlocked.Exchange(ref _pendingMissRefresh, 0); }
+        });
     }
 
     private void Prune()
@@ -79,27 +126,40 @@ public sealed class ProcessResolverService : IDisposable
 
     private static string MakeKey(string protocol, string ip, int port) => $"{protocol}|{ip}|{port}";
 
-    private void Upsert(string protocol, string ip, int port, int pid)
-    {
-        var name = PidToName(pid);
-        var key = MakeKey(protocol, ip, port);
-        _cache[key] = new Entry(pid, name, DateTime.UtcNow);
-    }
-
     private string PidToName(int pid)
     {
-        if (pid <= 0) return "system";
+        var baseName = GetBaseName(pid);
+        if (string.Equals(baseName, "svchost", StringComparison.OrdinalIgnoreCase))
+        {
+            var services = _svchost.GetServices(pid);
+            if (services.Count > 0)
+                return $"svchost ({string.Join(", ", services)})";
+        }
+        return baseName;
+    }
+
+    private string GetBaseName(int pid)
+    {
+        if (pid < 0) return "system";
+        if (pid == 0) return "system";
         if (pid == 4) return "System";
-        if (_pidNameCache.TryGetValue(pid, out var name)) return name;
-        try
+        if (_pidNameCache.TryGetValue(pid, out var cached)) return cached;
+
+        var name = NativeProcess.TryGetProcessName(pid);
+        if (string.IsNullOrEmpty(name))
         {
-            using var p = Process.GetProcessById(pid);
-            name = p.ProcessName;
+            try
+            {
+                using var p = Process.GetProcessById(pid);
+                name = p.ProcessName;
+            }
+            catch
+            {
+                return "unknown";
+            }
         }
-        catch
-        {
-            name = "unknown";
-        }
+
+        if (string.IsNullOrEmpty(name)) return "unknown";
         _pidNameCache[pid] = name;
         return name;
     }
@@ -195,6 +255,7 @@ public sealed class ProcessResolverService : IDisposable
         _disposed = true;
         _refreshTimer.Dispose();
         _pruneTimer.Dispose();
+        _svchost.Dispose();
     }
 
     [DllImport("iphlpapi.dll", SetLastError = true)]

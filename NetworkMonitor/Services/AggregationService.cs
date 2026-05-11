@@ -29,6 +29,8 @@ public sealed class AggregationService
 
     public event EventHandler<ConnectionAggregate>? ConnectionCreated;
     public event EventHandler<RemoteIpAggregate>? RemoteIpCreated;
+    public event EventHandler<IReadOnlyList<ConnectionAggregate>>? ConnectionsPruned;
+    public event EventHandler<IReadOnlyList<RemoteIpAggregate>>? RemoteIpsPruned;
 
     public void Add(PacketRecord r)
     {
@@ -105,8 +107,7 @@ public sealed class AggregationService
         else if (isOutbound) conn.BytesOut += r.Size;
         else conn.BytesIn += r.Size;
         conn.LastSeen = r.Timestamp;
-        if ((string.IsNullOrEmpty(conn.ProcessName) || conn.ProcessName == "unknown") &&
-            !string.IsNullOrEmpty(r.ProcessName) && r.ProcessName != "unknown")
+        if (IsWeakName(conn.ProcessName) && IsStrongName(r.ProcessName))
         {
             conn.ProcessName = r.ProcessName;
             conn.ProcessId = r.ProcessId;
@@ -140,8 +141,7 @@ public sealed class AggregationService
         ipEntry.Packets++;
         ipEntry.LastSeen = r.Timestamp;
         if (created) ipEntry.Connections++;
-        if ((string.IsNullOrEmpty(ipEntry.TopProcess) || ipEntry.TopProcess == "unknown") &&
-            !string.IsNullOrEmpty(r.ProcessName) && r.ProcessName != "unknown")
+        if (IsWeakName(ipEntry.TopProcess) && IsStrongName(r.ProcessName))
         {
             ipEntry.TopProcess = r.ProcessName;
             ipEntry.TopProcessId = r.ProcessId;
@@ -181,6 +181,46 @@ public sealed class AggregationService
 
     public IReadOnlyList<ProcessStats> TopProcesses(int count) =>
         _byProcess.Values.OrderByDescending(x => x.Bytes).Take(count).ToList();
+
+    public void Prune(TimeSpan ttl)
+    {
+        var cutoff = DateTime.Now - ttl;
+
+        List<ConnectionAggregate>? removedConns = null;
+        foreach (var kv in _connections)
+        {
+            if (kv.Value.LastSeen < cutoff && _connections.TryRemove(kv.Key, out var c))
+            {
+                removedConns ??= new List<ConnectionAggregate>();
+                removedConns.Add(c);
+            }
+        }
+
+        List<RemoteIpAggregate>? removedIps = null;
+        foreach (var kv in _byIp)
+        {
+            if (kv.Value.LastSeen < cutoff && _byIp.TryRemove(kv.Key, out var ip))
+            {
+                removedIps ??= new List<RemoteIpAggregate>();
+                removedIps.Add(ip);
+            }
+        }
+
+        if (removedConns is { Count: > 0 })
+        {
+            try { ConnectionsPruned?.Invoke(this, removedConns); } catch { }
+        }
+        if (removedIps is { Count: > 0 })
+        {
+            try { RemoteIpsPruned?.Invoke(this, removedIps); } catch { }
+        }
+    }
+
+    private static bool IsWeakName(string? name) =>
+        string.IsNullOrEmpty(name) || name == "unknown" || name.StartsWith('~');
+
+    private static bool IsStrongName(string? name) =>
+        !string.IsNullOrEmpty(name) && name != "unknown" && !name.StartsWith('~');
 
     public void Clear()
     {

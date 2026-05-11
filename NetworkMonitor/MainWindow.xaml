@@ -12,15 +12,33 @@
     <Window.Resources>
         <conv:InverseBoolConverter x:Key="InverseBoolConverter" />
         <conv:BytesConverter x:Key="BytesConverter" />
+
+        <ContextMenu x:Key="ConnectionRowMenu">
+            <MenuItem Header="Копировать" Click="CopyConnection_Click" />
+            <MenuItem Header="Перейти к файлу процесса" Click="OpenProcessFile_Click" />
+        </ContextMenu>
+
+        <ContextMenu x:Key="RemoteIpRowMenu">
+            <MenuItem Header="Копировать" Click="CopyRemoteIp_Click" />
+            <MenuItem Header="Перейти к файлу процесса" Click="OpenProcessFileRemoteIp_Click" />
+        </ContextMenu>
+
+        <Style x:Key="ConnectionRowStyle" TargetType="DataGridRow" BasedOn="{StaticResource {x:Type DataGridRow}}">
+            <Setter Property="ContextMenu" Value="{StaticResource ConnectionRowMenu}" />
+        </Style>
+
+        <Style x:Key="RemoteIpRowStyle" TargetType="DataGridRow" BasedOn="{StaticResource {x:Type DataGridRow}}">
+            <Setter Property="ContextMenu" Value="{StaticResource RemoteIpRowMenu}" />
+        </Style>
     </Window.Resources>
 
     <DockPanel LastChildFill="True"
-               TextElement.Foreground="{StaticResource ForegroundBrush}"
+               TextElement.Foreground="{DynamicResource ForegroundBrush}"
                TextElement.FontFamily="Segoe UI"
-               Background="{StaticResource BgBrush}">
+               Background="{DynamicResource BgBrush}">
 
         <!-- Top toolbar -->
-        <Border DockPanel.Dock="Top" Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource BorderBrush}"
+        <Border DockPanel.Dock="Top" Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource BorderBrush}"
                 BorderThickness="0,0,0,1" Padding="12,8">
             <Grid>
                 <Grid.ColumnDefinitions>
@@ -30,46 +48,46 @@
                 </Grid.ColumnDefinitions>
 
                 <TextBlock Grid.Column="0" Text="Network Monitor" FontSize="16" FontWeight="Bold"
-                           Foreground="{StaticResource ForegroundBrush}" VerticalAlignment="Center" Margin="0,0,16,0" />
+                           Foreground="{DynamicResource ForegroundBrush}" VerticalAlignment="Center" Margin="0,0,16,0" />
 
                 <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
-                    <TextBlock Text="Интерфейс:" VerticalAlignment="Center" Margin="0,0,6,0" Foreground="{StaticResource MutedBrush}" />
+                    <TextBlock Text="Интерфейс:" VerticalAlignment="Center" Margin="0,0,6,0" Foreground="{DynamicResource MutedBrush}" />
                     <ComboBox Width="320" ItemsSource="{Binding Interfaces}" SelectedItem="{Binding SelectedInterface}" />
                     <Button Content="Запустить" Command="{Binding StartCommand}" Margin="8,0,4,0"
                             IsEnabled="{Binding IsCapturing, Converter={StaticResource InverseBoolConverter}}" />
-                    <Button Content="Стоп" Command="{Binding StopCommand}" Style="{StaticResource DangerButton}"
+                    <Button Content="Стоп" Command="{Binding StopCommand}" Style="{DynamicResource DangerButton}"
                             IsEnabled="{Binding IsCapturing}" />
-                    <Button Content="Пауза" Command="{Binding TogglePauseCommand}" Style="{StaticResource GhostButton}"
+                    <Button Content="Пауза" Command="{Binding TogglePauseCommand}" Style="{DynamicResource GhostButton}"
                             Margin="4,0,0,0" IsEnabled="{Binding IsCapturing}" />
-                    <Button Content="Очистить" Command="{Binding ClearCommand}" Style="{StaticResource GhostButton}" Margin="4,0,0,0" />
-                    <Button Content="Экспорт" Command="{Binding ExportCommand}" Style="{StaticResource GhostButton}" Margin="4,0,0,0" />
+                    <Button Content="Очистить" Command="{Binding ClearCommand}" Style="{DynamicResource GhostButton}" Margin="4,0,0,0" />
+                    <Button Content="Экспорт" Command="{Binding ExportCommand}" Style="{DynamicResource GhostButton}" Margin="4,0,0,0" />
                 </StackPanel>
 
                 <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
-                    <TextBlock Text="Лог:" VerticalAlignment="Center" Margin="8,0,4,0" Foreground="{StaticResource MutedBrush}" />
+                    <TextBlock Text="Лог:" VerticalAlignment="Center" Margin="8,0,4,0" Foreground="{DynamicResource MutedBrush}" />
                     <CheckBox IsChecked="{Binding LogToFile}" Content="вкл" VerticalAlignment="Center" Margin="0,0,8,0" />
                     <ComboBox Width="80" ItemsSource="{Binding LogFormatOptions}" SelectedItem="{Binding LogFormat}" />
-                    <Button Content="Тема" Command="{Binding ToggleThemeCommand}" Style="{StaticResource GhostButton}" Margin="8,0,0,0"
+                    <Button Content="Тема" Command="{Binding ToggleThemeCommand}" Style="{DynamicResource GhostButton}" Margin="8,0,0,0"
                             ToolTip="Переключить тему (тёмная / светлая)" />
                 </StackPanel>
             </Grid>
         </Border>
 
         <!-- Status bar -->
-        <Border DockPanel.Dock="Bottom" Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource BorderBrush}"
+        <Border DockPanel.Dock="Bottom" Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource BorderBrush}"
                 BorderThickness="0,1,0,0" Padding="12,6">
             <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
-                <TextBlock Grid.Column="0" Text="{Binding StatusText}" Foreground="{StaticResource MutedBrush}" />
+                <TextBlock Grid.Column="0" Text="{Binding StatusText}" Foreground="{DynamicResource MutedBrush}" />
                 <StackPanel Grid.Column="1" Orientation="Horizontal">
-                    <TextBlock Text="Соединения: " Foreground="{StaticResource MutedBrush}" />
+                    <TextBlock Text="Соединения: " Foreground="{DynamicResource MutedBrush}" />
                     <TextBlock Text="{Binding ConnectionCount}" Margin="0,0,12,0" />
-                    <TextBlock Text="Пакеты: " Foreground="{StaticResource MutedBrush}" />
+                    <TextBlock Text="Пакеты: " Foreground="{DynamicResource MutedBrush}" />
                     <TextBlock Text="{Binding TotalPackets}" Margin="0,0,12,0" />
-                    <TextBlock Text="Потеряно: " Foreground="{StaticResource MutedBrush}" />
+                    <TextBlock Text="Потеряно: " Foreground="{DynamicResource MutedBrush}" />
                     <TextBlock Text="{Binding DroppedPackets}" />
                 </StackPanel>
             </Grid>
@@ -93,7 +111,7 @@
                                     <ColumnDefinition Width="*" />
                                     <ColumnDefinition Width="Auto" />
                                 </Grid.ColumnDefinitions>
-                                <TextBlock Text="Скорость in" Foreground="{StaticResource MutedBrush}" />
+                                <TextBlock Text="Скорость in" Foreground="{DynamicResource MutedBrush}" />
                                 <TextBlock Grid.Column="1" Text="{Binding SpeedInText}" FontWeight="Bold" />
                             </Grid>
                             <Grid Margin="0,0,0,6">
@@ -101,7 +119,7 @@
                                     <ColumnDefinition Width="*" />
                                     <ColumnDefinition Width="Auto" />
                                 </Grid.ColumnDefinitions>
-                                <TextBlock Text="Скорость out" Foreground="{StaticResource MutedBrush}" />
+                                <TextBlock Text="Скорость out" Foreground="{DynamicResource MutedBrush}" />
                                 <TextBlock Grid.Column="1" Text="{Binding SpeedOutText}" FontWeight="Bold" />
                             </Grid>
                             <Grid Margin="0,0,0,6">
@@ -109,7 +127,7 @@
                                     <ColumnDefinition Width="*" />
                                     <ColumnDefinition Width="Auto" />
                                 </Grid.ColumnDefinitions>
-                                <TextBlock Text="Всего in" Foreground="{StaticResource MutedBrush}" />
+                                <TextBlock Text="Всего in" Foreground="{DynamicResource MutedBrush}" />
                                 <TextBlock Grid.Column="1" Text="{Binding TotalBytesInText}" />
                             </Grid>
                             <Grid>
@@ -117,7 +135,7 @@
                                     <ColumnDefinition Width="*" />
                                     <ColumnDefinition Width="Auto" />
                                 </Grid.ColumnDefinitions>
-                                <TextBlock Text="Всего out" Foreground="{StaticResource MutedBrush}" />
+                                <TextBlock Text="Всего out" Foreground="{DynamicResource MutedBrush}" />
                                 <TextBlock Grid.Column="1" Text="{Binding TotalBytesOutText}" />
                             </Grid>
                         </StackPanel>
@@ -125,13 +143,13 @@
 
                     <GroupBox Header="Фильтры">
                         <StackPanel>
-                            <TextBlock Text="Поиск" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,2" />
+                            <TextBlock Text="Поиск" Foreground="{DynamicResource MutedBrush}" Margin="0,0,0,2" />
                             <TextBox Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged, Delay=200}" Margin="0,0,0,8" />
 
-                            <TextBlock Text="IP содержит" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,2" />
+                            <TextBlock Text="IP содержит" Foreground="{DynamicResource MutedBrush}" Margin="0,0,0,2" />
                             <TextBox Text="{Binding IpFilter, UpdateSourceTrigger=PropertyChanged, Delay=200}" Margin="0,0,0,8" />
 
-                            <TextBlock Text="Диапазон IP (от → до)" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,2" />
+                            <TextBlock Text="Диапазон IP (от → до)" Foreground="{DynamicResource MutedBrush}" Margin="0,0,0,2" />
                             <Grid Margin="0,0,0,8">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*" />
@@ -142,24 +160,24 @@
                                 <TextBox Grid.Column="2" Text="{Binding IpRangeTo, UpdateSourceTrigger=PropertyChanged, Delay=200}" />
                             </Grid>
 
-                            <TextBlock Text="Процесс" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,2" />
+                            <TextBlock Text="Процесс" Foreground="{DynamicResource MutedBrush}" Margin="0,0,0,2" />
                             <TextBox Text="{Binding ProcessFilter, UpdateSourceTrigger=PropertyChanged, Delay=200}" Margin="0,0,0,8" />
 
-                            <TextBlock Text="Протокол" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,2" />
+                            <TextBlock Text="Протокол" Foreground="{DynamicResource MutedBrush}" Margin="0,0,0,2" />
                             <ComboBox ItemsSource="{Binding ProtocolOptions}" SelectedItem="{Binding ProtocolFilter}" Margin="0,0,0,8" />
 
-                            <TextBlock Text="Зона" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,2" />
+                            <TextBlock Text="Зона" Foreground="{DynamicResource MutedBrush}" Margin="0,0,0,2" />
                             <ComboBox ItemsSource="{Binding ScopeOptions}" SelectedItem="{Binding ScopeFilter}" Margin="0,0,0,8" />
 
                             <CheckBox IsChecked="{Binding HideUnknownProcess}" Content="Скрыть unknown" Margin="0,0,0,8" />
 
-                            <TextBlock Text="Группировка" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,2" />
+                            <TextBlock Text="Группировка" Foreground="{DynamicResource MutedBrush}" Margin="0,0,0,2" />
                             <ComboBox ItemsSource="{Binding GroupingOptions}" SelectedItem="{Binding SelectedGrouping}" Margin="0,0,0,8" />
 
                             <StackPanel Orientation="Horizontal">
-                                <Button Content="ЧС" Command="{Binding AddBlacklistCommand}" Style="{StaticResource DangerButton}" Margin="0,0,4,0"
+                                <Button Content="ЧС" Command="{Binding AddBlacklistCommand}" Style="{DynamicResource DangerButton}" Margin="0,0,4,0"
                                         ToolTip="Добавить IP из поля 'IP содержит' в чёрный список" />
-                                <Button Content="БС" Command="{Binding AddWhitelistCommand}" Style="{StaticResource GhostButton}"
+                                <Button Content="БС" Command="{Binding AddWhitelistCommand}" Style="{DynamicResource GhostButton}"
                                         ToolTip="Добавить IP из поля 'IP содержит' в белый список" />
                             </StackPanel>
                         </StackPanel>
@@ -175,7 +193,7 @@
                                             <ColumnDefinition Width="Auto" />
                                         </Grid.ColumnDefinitions>
                                         <TextBlock Text="{Binding Key}" TextTrimming="CharacterEllipsis" />
-                                        <TextBlock Grid.Column="1" Text="{Binding Display}" Foreground="{StaticResource AccentBrush}" />
+                                        <TextBlock Grid.Column="1" Text="{Binding Display}" Foreground="{DynamicResource AccentBrush}" />
                                     </Grid>
                                 </DataTemplate>
                             </ItemsControl.ItemTemplate>
@@ -192,7 +210,7 @@
                                             <ColumnDefinition Width="Auto" />
                                         </Grid.ColumnDefinitions>
                                         <TextBlock Text="{Binding Key}" TextTrimming="CharacterEllipsis" />
-                                        <TextBlock Grid.Column="1" Text="{Binding Display}" Foreground="{StaticResource AccentBrush}" />
+                                        <TextBlock Grid.Column="1" Text="{Binding Display}" Foreground="{DynamicResource AccentBrush}" />
                                     </Grid>
                                 </DataTemplate>
                             </ItemsControl.ItemTemplate>
@@ -205,7 +223,7 @@
             <!-- Tabs -->
             <TabControl Grid.Column="1">
                 <TabItem Header="Соединения">
-                    <DataGrid ItemsSource="{Binding ConnectionsView}">
+                    <DataGrid ItemsSource="{Binding ConnectionsView}" RowStyle="{StaticResource ConnectionRowStyle}">
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="Зона" Binding="{Binding ScopeText}" Width="80" />
                             <DataGridTextColumn Header="Процесс" Binding="{Binding ProcessName}" Width="140" />
@@ -226,7 +244,7 @@
                 </TabItem>
 
                 <TabItem Header="IP-адреса">
-                    <DataGrid ItemsSource="{Binding RemoteIpsView}">
+                    <DataGrid ItemsSource="{Binding RemoteIpsView}" RowStyle="{StaticResource RemoteIpRowStyle}">
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="IP" Binding="{Binding Ip}" Width="140" />
                             <DataGridTextColumn Header="Хост (DNS)" Binding="{Binding RemoteHost}" Width="220" />
@@ -245,7 +263,7 @@
                 </TabItem>
 
                 <TabItem Header="Скорость">
-                    <Border Style="{StaticResource Card}">
+                    <Border Style="{DynamicResource Card}">
                         <lvc:CartesianChart Series="{Binding SpeedSeries}"
                                             XAxes="{Binding SpeedXAxes}"
                                             YAxes="{Binding SpeedYAxes}"
