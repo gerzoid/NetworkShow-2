@@ -1,4 +1,5 @@
 using System;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Management;
@@ -6,15 +7,80 @@ using System.Windows;
 using System.Windows.Controls;
 using NetworkMonitor.Models;
 using NetworkMonitor.ViewModels;
+using Forms = System.Windows.Forms;
 
 namespace NetworkMonitor;
 
 public partial class MainWindow : Window
 {
+    private Forms.NotifyIcon? _trayIcon;
+    private bool _isExiting;
+
     public MainWindow()
     {
         InitializeComponent();
-        Closed += (_, _) => (DataContext as MainViewModel)?.Dispose();
+        InitTrayIcon();
+        Closing += MainWindow_Closing;
+        Closed += (_, _) =>
+        {
+            (DataContext as MainViewModel)?.Dispose();
+            _trayIcon?.Dispose();
+        };
+    }
+
+    private void InitTrayIcon()
+    {
+        var menu = new Forms.ContextMenuStrip();
+        menu.Items.Add("Открыть", null, (_, _) => ShowFromTray());
+        menu.Items.Add(new Forms.ToolStripSeparator());
+        menu.Items.Add("Выход", null, (_, _) => ExitApplication());
+
+        _trayIcon = new Forms.NotifyIcon
+        {
+            Text = "NetworkShow",
+            Visible = true,
+            Icon = TryGetAppIcon(),
+            ContextMenuStrip = menu
+        };
+        _trayIcon.DoubleClick += (_, _) => ShowFromTray();
+    }
+
+    private static System.Drawing.Icon TryGetAppIcon()
+    {
+        try
+        {
+            var exePath = Process.GetCurrentProcess().MainModule?.FileName;
+            if (!string.IsNullOrEmpty(exePath))
+            {
+                var icon = System.Drawing.Icon.ExtractAssociatedIcon(exePath);
+                if (icon != null) return icon;
+            }
+        }
+        catch { }
+
+        return System.Drawing.SystemIcons.Application;
+    }
+
+    private void MainWindow_Closing(object? sender, CancelEventArgs e)
+    {
+        if (_isExiting) return;
+
+        // Сворачиваем в трей вместо закрытия
+        e.Cancel = true;
+        Hide();
+    }
+
+    private void ShowFromTray()
+    {
+        Show();
+        WindowState = WindowState.Normal;
+        Activate();
+    }
+
+    private void ExitApplication()
+    {
+        _isExiting = true;
+        Close();
     }
 
     private void CopyConnection_Click(object sender, RoutedEventArgs e)
