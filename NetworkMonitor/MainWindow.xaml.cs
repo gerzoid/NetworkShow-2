@@ -63,7 +63,8 @@ public partial class MainWindow : Window
 
     private void MainWindow_Closing(object? sender, CancelEventArgs e)
     {
-        if (_isExiting) return;
+        // При завершении сеанса Windows (shutdown/logoff) закрытие отменять нельзя
+        if (_isExiting || App.IsSessionEnding) return;
 
         // Сворачиваем в трей вместо закрытия
         e.Cancel = true;

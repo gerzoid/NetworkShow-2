@@ -15,7 +15,8 @@ public sealed class SvchostServiceResolver : IDisposable
     public SvchostServiceResolver()
     {
         Refresh();
-        _timer = new Timer(_ => Refresh(), null, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
+        // Состав служб в svchost меняется редко — частый WMI-опрос не нужен
+        _timer = new Timer(_ => Refresh(), null, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30));
     }
 
     public IReadOnlyList<string> GetServices(int pid)
@@ -32,19 +33,23 @@ public sealed class SvchostServiceResolver : IDisposable
         {
             using var searcher = new ManagementObjectSearcher(
                 "SELECT ProcessId, Name FROM Win32_Service WHERE State='Running' AND ProcessId<>0");
+            using var results = searcher.Get();
             var temp = new Dictionary<int, List<string>>();
-            foreach (var obj in searcher.Get())
+            foreach (var obj in results)
             {
-                int pid = 0;
-                try { pid = Convert.ToInt32(obj["ProcessId"]); } catch { }
-                var name = obj["Name"]?.ToString();
-                if (pid <= 0 || string.IsNullOrEmpty(name)) continue;
-                if (!temp.TryGetValue(pid, out var list))
+                using (obj)
                 {
-                    list = new List<string>();
-                    temp[pid] = list;
+                    int pid = 0;
+                    try { pid = Convert.ToInt32(obj["ProcessId"]); } catch { }
+                    var name = obj["Name"]?.ToString();
+                    if (pid <= 0 || string.IsNullOrEmpty(name)) continue;
+                    if (!temp.TryGetValue(pid, out var list))
+                    {
+                        list = new List<string>();
+                        temp[pid] = list;
+                    }
+                    list.Add(name);
                 }
-                list.Add(name);
             }
             foreach (var kv in temp)
             {

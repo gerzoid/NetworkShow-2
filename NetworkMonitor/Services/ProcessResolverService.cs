@@ -18,9 +18,11 @@ public sealed class ProcessResolverService : IDisposable
 
     private static readonly TimeSpan EntryTtl = TimeSpan.FromSeconds(60);
     private static readonly TimeSpan MissRefreshDebounce = TimeSpan.FromMilliseconds(150);
+    // Windows переиспользует PID — без TTL трафик нового процесса подписывался бы именем умершего
+    private static readonly TimeSpan PidNameTtl = TimeSpan.FromSeconds(30);
 
     private readonly ConcurrentDictionary<string, Entry> _cache = new();
-    private readonly ConcurrentDictionary<int, string> _pidNameCache = new();
+    private readonly ConcurrentDictionary<int, (string Name, DateTime CachedAt)> _pidNameCache = new();
     private readonly SvchostServiceResolver _svchost = new();
     private readonly Timer _refreshTimer;
     private readonly Timer _pruneTimer;
@@ -122,6 +124,13 @@ public sealed class ProcessResolverService : IDisposable
             if (kv.Value.LastSeen < cutoff)
                 _cache.TryRemove(kv.Key, out _);
         }
+
+        var pidCutoff = DateTime.UtcNow - PidNameTtl;
+        foreach (var kv in _pidNameCache)
+        {
+            if (kv.Value.CachedAt < pidCutoff)
+                _pidNameCache.TryRemove(kv.Key, out _);
+        }
     }
 
     private static string MakeKey(string protocol, string ip, int port) => $"{protocol}|{ip}|{port}";
@@ -143,7 +152,9 @@ public sealed class ProcessResolverService : IDisposable
         if (pid < 0) return "system";
         if (pid == 0) return "system";
         if (pid == 4) return "System";
-        if (_pidNameCache.TryGetValue(pid, out var cached)) return cached;
+        if (_pidNameCache.TryGetValue(pid, out var cached) &&
+            DateTime.UtcNow - cached.CachedAt < PidNameTtl)
+            return cached.Name;
 
         var name = NativeProcess.TryGetProcessName(pid);
         if (string.IsNullOrEmpty(name))
@@ -155,12 +166,13 @@ public sealed class ProcessResolverService : IDisposable
             }
             catch
             {
+                _pidNameCache.TryRemove(pid, out _);
                 return "unknown";
             }
         }
 
         if (string.IsNullOrEmpty(name)) return "unknown";
-        _pidNameCache[pid] = name;
+        _pidNameCache[pid] = (name, DateTime.UtcNow);
         return name;
     }
 

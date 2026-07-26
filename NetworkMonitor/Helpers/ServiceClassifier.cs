@@ -18,13 +18,13 @@ public static class ServiceClassifier
         ("*.teams.skype.com", "Teams"),
         ("*.skype.com", "Skype"),
         ("*.lync.com", "Teams (Lync)"),
+        ("*.outlook.office365.com", "Outlook"),
+        ("*.outlook.office.com", "Outlook"),
+        ("*.outlook.com", "Outlook"),
         ("*.office.com", "Office365"),
         ("*.office.net", "Office365"),
         ("*.officeapps.live.com", "Office365"),
         ("*.office365.com", "Office365"),
-        ("*.outlook.com", "Outlook"),
-        ("*.outlook.office365.com", "Outlook"),
-        ("*.outlook.office.com", "Outlook"),
         ("*.sharepoint.com", "SharePoint"),
         ("*.onedrive.com", "OneDrive"),
         ("*.1drv.com", "OneDrive"),
@@ -40,6 +40,11 @@ public static class ServiceClassifier
         ("*.msftconnecttest.com", "MS Connect Test"),
         ("*.bing.com", "Bing"),
         ("*.bingapis.com", "Bing"),
+        ("*.cognitiveservices.azure.com", "Azure AI"),
+        ("*.openai.azure.com", "Azure OpenAI"),
+        ("*.applicationinsights.azure.com", "AppInsights"),
+        ("*.applicationinsights.io", "AppInsights"),
+        ("dc.services.visualstudio.com", "AppInsights"),
         ("*.azure.com", "Azure"),
         ("*.azureedge.net", "Azure CDN"),
         ("*.azurefd.net", "Azure Front Door"),
@@ -48,14 +53,10 @@ public static class ServiceClassifier
         ("*.table.core.windows.net", "Azure Table"),
         ("*.file.core.windows.net", "Azure Files"),
         ("*.servicebus.windows.net", "Azure ServiceBus"),
-        ("*.cognitiveservices.azure.com", "Azure AI"),
-        ("*.openai.azure.com", "Azure OpenAI"),
-        ("*.applicationinsights.azure.com", "AppInsights"),
-        ("*.applicationinsights.io", "AppInsights"),
-        ("dc.services.visualstudio.com", "AppInsights"),
         ("*.visualstudio.com", "VisualStudio"),
         ("*.vsassets.io", "VisualStudio"),
         ("*.visualstudio.microsoft.com", "VisualStudio"),
+        ("time.windows.com", "NTP"),
         ("*.windows.com", "Windows"),
         ("*.windows.net", "Windows"),
         ("*.live.com", "Live"),
@@ -64,32 +65,32 @@ public static class ServiceClassifier
         ("*.msn.com", "MSN"),
 
         // --- Code / Devtools ---
+        ("api.github.com", "GitHub API"),
+        ("*.copilot.github.com", "Copilot"),
+        ("*.githubcopilot.com", "Copilot"),
         ("*.github.com", "GitHub"),
         ("github.com", "GitHub"),
-        ("api.github.com", "GitHub API"),
         ("*.githubusercontent.com", "GitHub"),
         ("*.githubassets.com", "GitHub"),
-        ("*.githubcopilot.com", "Copilot"),
-        ("*.copilot.github.com", "Copilot"),
         ("*.gitlab.com", "GitLab"),
         ("*.bitbucket.org", "Bitbucket"),
+        ("registry.npmjs.org", "npm"),
         ("*.npmjs.com", "npm"),
         ("*.npmjs.org", "npm"),
-        ("registry.npmjs.org", "npm"),
         ("*.nuget.org", "NuGet"),
+        ("hub.docker.com", "Docker Hub"),
         ("*.docker.io", "Docker"),
         ("*.docker.com", "Docker"),
-        ("hub.docker.com", "Docker Hub"),
         ("*.jetbrains.com", "JetBrains"),
 
         // --- Anthropic / OpenAI / AI ---
-        ("*.anthropic.com", "Anthropic"),
         ("api.anthropic.com", "Anthropic API"),
+        ("*.anthropic.com", "Anthropic"),
         ("claude.ai", "Claude"),
         ("*.claude.ai", "Claude"),
         ("api.openai.com", "OpenAI"),
-        ("*.openai.com", "OpenAI"),
         ("chat.openai.com", "ChatGPT"),
+        ("*.openai.com", "OpenAI"),
 
         // --- Google ---
         ("*.googleapis.com", "Google API"),
@@ -107,9 +108,10 @@ public static class ServiceClassifier
         ("*.gvt2.com", "Google Update"),
 
         // --- Apple ---
+        ("*.itunes.apple.com", "iTunes"),
+        ("*.time.apple.com", "NTP"),
         ("*.apple.com", "Apple"),
         ("*.icloud.com", "iCloud"),
-        ("*.itunes.apple.com", "iTunes"),
         ("*.mzstatic.com", "Apple"),
         ("*.cdn-apple.com", "Apple CDN"),
 
@@ -171,9 +173,9 @@ public static class ServiceClassifier
         ("*.ok.ru", "Odnoklassniki"),
 
         // --- Common protocol-ish hostnames ---
+        // time.windows.com и *.time.apple.com перенесены выше — до общих правил
+        // *.windows.com и *.apple.com, которые их затеняли
         ("*.ntp.org", "NTP"),
-        ("time.windows.com", "NTP"),
-        ("*.time.apple.com", "NTP"),
     };
 
     public static string Classify(string hostname)

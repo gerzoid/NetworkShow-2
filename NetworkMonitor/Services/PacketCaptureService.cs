@@ -70,19 +70,29 @@ public sealed class PacketCaptureService : IDisposable
     {
         if (IsRunning) return;
         var devs = CaptureDeviceList.Instance;
-        _device = devs.FirstOrDefault(d => d.Name == deviceName) ?? devs.FirstOrDefault();
-        if (_device is null)
+        var device = devs.FirstOrDefault(d => d.Name == deviceName) ?? devs.FirstOrDefault();
+        if (device is null)
             throw new InvalidOperationException("Не найдены доступные сетевые интерфейсы. Установите Npcap.");
 
-        _localAddresses = CollectLocalAddresses(_device);
-        _device.OnPacketArrival += OnPacketArrival;
-        _device.Open(new DeviceConfiguration
+        _localAddresses = CollectLocalAddresses(device);
+        device.OnPacketArrival += OnPacketArrival;
+        try
         {
-            Mode = DeviceModes.Promiscuous,
-            ReadTimeout = 250,
-            BufferSize = 16 * 1024 * 1024
-        });
-        _device.StartCapture();
+            device.Open(new DeviceConfiguration
+            {
+                Mode = DeviceModes.Promiscuous,
+                ReadTimeout = 250,
+                BufferSize = 16 * 1024 * 1024
+            });
+            device.StartCapture();
+        }
+        catch
+        {
+            device.OnPacketArrival -= OnPacketArrival;
+            try { device.Close(); } catch { }
+            throw;
+        }
+        _device = device;
         IsRunning = true;
     }
 

@@ -276,8 +276,32 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private void TogglePause()
     {
         if (!IsCapturing) return;
-        IsPaused = !IsPaused;
-        StatusText = IsPaused ? "Пауза." : "Захват.";
+        if (IsPaused)
+        {
+            if (SelectedInterface is null)
+            {
+                StatusText = "Не выбран интерфейс для возобновления.";
+                return;
+            }
+            try
+            {
+                _captureService.Start(SelectedInterface.Name);
+                IsPaused = false;
+                StatusText = "Захват.";
+            }
+            catch (Exception ex)
+            {
+                StatusText = $"Ошибка возобновления захвата: {ex.Message}";
+            }
+        }
+        else
+        {
+            // Останавливаем сам захват: пакеты за время паузы не считаются,
+            // но и не выбрасываются молча при работающем драйвере
+            _captureService.Stop();
+            IsPaused = true;
+            StatusText = "Пауза — захват приостановлен.";
+        }
     }
 
     [RelayCommand]
@@ -349,7 +373,6 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             {
                 while (reader.TryRead(out var rec))
                 {
-                    if (IsPaused) continue;
                     _aggregation.Add(rec);
                     _notifications.Inspect(rec);
                     if (LogToFile)
