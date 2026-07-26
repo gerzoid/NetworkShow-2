@@ -3,6 +3,8 @@ using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
+using NetworkMonitor.Services;
+using NetworkMonitor.Themes;
 
 namespace NetworkMonitor;
 
@@ -42,6 +44,16 @@ public partial class App : Application
             args.SetObserved();
         };
 
+        SettingsService.Load();
+        var savedTheme = SettingsService.Current.Theme == nameof(AppTheme.Light) ? AppTheme.Light : AppTheme.Dark;
+        if (savedTheme != ThemeManager.Current)
+            ThemeManager.Apply(savedTheme);
+        ThemeManager.ThemeChanged += (_, t) =>
+        {
+            SettingsService.Current.Theme = t.ToString();
+            SettingsService.Save();
+        };
+
         base.OnStartup(e);
     }
 
@@ -55,6 +67,7 @@ public partial class App : Application
     {
         if (_ownsMutex)
         {
+            SettingsService.Save();
             try { _singleInstanceMutex?.ReleaseMutex(); } catch { }
         }
         _singleInstanceMutex?.Dispose();

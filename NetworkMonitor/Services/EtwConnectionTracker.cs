@@ -77,12 +77,10 @@ public sealed class EtwConnectionTracker : IDisposable
     {
         if (_disposed) return;
         _disposed = true;
-        try
-        {
-            _session?.Stop();
-            _session?.Dispose();
-        }
-        catch { }
+        try { _session?.Stop(); } catch { }
+        // Дожидаемся Process(), чтобы обработчики не дёргали резолвер после его Dispose
+        try { _processTask?.Wait(TimeSpan.FromSeconds(2)); } catch { }
+        try { _session?.Dispose(); } catch { }
         _session = null;
     }
 }

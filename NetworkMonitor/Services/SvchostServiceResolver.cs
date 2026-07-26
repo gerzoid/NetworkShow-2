@@ -66,6 +66,8 @@ public sealed class SvchostServiceResolver : IDisposable
     public void Dispose()
     {
         _disposed = true;
-        _timer.Dispose();
+        // Dispose(WaitHandle) дожидается выполняющегося коллбэка таймера
+        using var wh = new ManualResetEvent(false);
+        if (_timer.Dispose(wh)) wh.WaitOne(1000);
     }
 }

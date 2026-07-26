@@ -1,3 +1,5 @@
+using System.Globalization;
+
 namespace NetworkMonitor.Helpers;
 
 public static class ByteFormatter
@@ -13,8 +15,8 @@ public static class ByteFormatter
             v /= 1024.0;
             unit++;
         } while (v >= 1024 && unit < units.Length - 1);
-        return $"{v:F2} {units[unit]}";
+        return string.Create(CultureInfo.InvariantCulture, $"{v:F2} {units[unit]}");
     }
 
-    public static string FormatRate(long bytesPerSecond) => Format(bytesPerSecond) + "/c";
+    public static string FormatRate(long bytesPerSecond) => Format(bytesPerSecond) + "/s";
 }

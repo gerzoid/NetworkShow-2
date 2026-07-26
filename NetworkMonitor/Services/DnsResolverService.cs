@@ -9,7 +9,13 @@ namespace NetworkMonitor.Services;
 
 public sealed class DnsResolverService : IDisposable
 {
-    private readonly ConcurrentDictionary<string, string> _cache = new();
+    private static readonly TimeSpan PositiveTtl = TimeSpan.FromHours(1);
+    private static readonly TimeSpan NegativeTtl = TimeSpan.FromMinutes(5);
+
+    // Host == null — неудачный lookup (негативная запись); Pending — в очереди на резолв
+    private record struct CacheEntry(string? Host, DateTime CachedAt, bool Pending);
+
+    private readonly ConcurrentDictionary<string, CacheEntry> _cache = new();
     private readonly Channel<string> _queue;
     private readonly CancellationTokenSource _cts = new();
     private readonly Task[] _workers;
@@ -31,19 +37,37 @@ public sealed class DnsResolverService : IDisposable
     }
 
     public string? Lookup(string ip)
-        => _cache.TryGetValue(ip, out var h) ? h : null;
+    {
+        if (!_cache.TryGetValue(ip, out var e)) return null;
+        if (e.Pending || e.Host is null) return null;
+        return DateTime.UtcNow - e.CachedAt < PositiveTtl ? e.Host : null;
+    }
 
     public void Enqueue(string ip)
     {
         if (string.IsNullOrEmpty(ip)) return;
-        if (_cache.ContainsKey(ip)) return;
-        if (IsUnresolvable(ip))
+        if (IsUnresolvable(ip)) return;
+
+        if (_cache.TryGetValue(ip, out var e))
         {
-            _cache[ip] = ip;
-            return;
+            if (e.Pending) return;
+            var ttl = e.Host is null ? NegativeTtl : PositiveTtl;
+            if (DateTime.UtcNow - e.CachedAt < ttl) return;
         }
-        if (!_cache.TryAdd(ip, ip)) return;
+
+        _cache[ip] = new CacheEntry(null, DateTime.UtcNow, Pending: true);
         _queue.Writer.TryWrite(ip);
+    }
+
+    /// <summary>Удаляет устаревшие записи — кэш не растёт бесконечно на длинных сессиях.</summary>
+    public void Prune()
+    {
+        var cutoff = DateTime.UtcNow - PositiveTtl - PositiveTtl;
+        foreach (var kv in _cache)
+        {
+            if (!kv.Value.Pending && kv.Value.CachedAt < cutoff)
+                _cache.TryRemove(kv.Key, out _);
+        }
     }
 
     private async Task WorkerLoop()
@@ -55,10 +79,14 @@ public sealed class DnsResolverService : IDisposable
             {
                 while (reader.TryRead(out var ip))
                 {
-                    string host = ip;
+                    string? host = null;
                     try
                     {
-                        if (!IPAddress.TryParse(ip, out _)) continue;
+                        if (!IPAddress.TryParse(ip, out _))
+                        {
+                            _cache.TryRemove(ip, out _);
+                            continue;
+                        }
                         using var lookupCts = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token);
                         lookupCts.CancelAfter(_lookupTimeout);
                         var entry = await Dns.GetHostEntryAsync(ip, lookupCts.Token).ConfigureAwait(false);
@@ -68,8 +96,8 @@ public sealed class DnsResolverService : IDisposable
                     catch
                     {
                     }
-                    _cache[ip] = host;
-                    if (host != ip)
+                    _cache[ip] = new CacheEntry(host, DateTime.UtcNow, Pending: false);
+                    if (host is not null)
                     {
                         try { Resolved?.Invoke(this, new DnsResolvedEventArgs(ip, host)); }
                         catch { }
@@ -85,8 +113,14 @@ public sealed class DnsResolverService : IDisposable
         if (string.IsNullOrEmpty(ip)) return true;
         if (ip == "0.0.0.0" || ip == "::") return true;
         if (ip == "255.255.255.255") return true;
-        if (ip.StartsWith("224.") || ip.StartsWith("239.")) return true;
+        if (ip.StartsWith("169.254.")) return true;
         if (ip.StartsWith("ff", StringComparison.OrdinalIgnoreCase)) return true;
+        // Multicast 224.0.0.0/4 — все октеты 224-239
+        if (IPAddress.TryParse(ip, out var addr))
+        {
+            var b = addr.GetAddressBytes();
+            if (b.Length == 4 && b[0] >= 224 && b[0] <= 239) return true;
+        }
         return false;
     }
 

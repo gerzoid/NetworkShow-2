@@ -2,4 +2,5 @@
   <Project Path="NetworkMonitor/NetworkShow.csproj">
     <Platform Solution="Debug|*" Project="x64" />
   </Project>
+  <Project Path="NetworkMonitor.Tests/NetworkMonitor.Tests.csproj" />
 </Solution>

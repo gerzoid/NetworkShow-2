@@ -176,15 +176,34 @@ public sealed class ProcessResolverService : IDisposable
         return name;
     }
 
+    private const uint ERROR_INSUFFICIENT_BUFFER = 122;
+
     private void LoadTcpTable(int family)
     {
         int size = 0;
         GetExtendedTcpTable(IntPtr.Zero, ref size, false, family, TCP_TABLE_OWNER_PID_ALL, 0);
-        var buffer = Marshal.AllocHGlobal(size);
-        try
+        // Таблица могла вырасти между вызовом за размером и чтением — повторяем с новым размером
+        for (int attempt = 0; attempt < 3; attempt++)
         {
-            uint status = GetExtendedTcpTable(buffer, ref size, false, family, TCP_TABLE_OWNER_PID_ALL, 0);
-            if (status != 0) return;
+            var buffer = Marshal.AllocHGlobal(size);
+            try
+            {
+                uint status = GetExtendedTcpTable(buffer, ref size, false, family, TCP_TABLE_OWNER_PID_ALL, 0);
+                if (status == ERROR_INSUFFICIENT_BUFFER) continue;
+                if (status != 0) return;
+                ParseTcpTable(buffer, family);
+                return;
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(buffer);
+            }
+        }
+    }
+
+    private void ParseTcpTable(IntPtr buffer, int family)
+    {
+        {
             int count = Marshal.ReadInt32(buffer);
             int offset = 4;
             if (family == AF_INET)
@@ -212,21 +231,33 @@ public sealed class ProcessResolverService : IDisposable
                 }
             }
         }
-        finally
-        {
-            Marshal.FreeHGlobal(buffer);
-        }
     }
 
     private void LoadUdpTable(int family)
     {
         int size = 0;
         GetExtendedUdpTable(IntPtr.Zero, ref size, false, family, UDP_TABLE_OWNER_PID, 0);
-        var buffer = Marshal.AllocHGlobal(size);
-        try
+        for (int attempt = 0; attempt < 3; attempt++)
         {
-            uint status = GetExtendedUdpTable(buffer, ref size, false, family, UDP_TABLE_OWNER_PID, 0);
-            if (status != 0) return;
+            var buffer = Marshal.AllocHGlobal(size);
+            try
+            {
+                uint status = GetExtendedUdpTable(buffer, ref size, false, family, UDP_TABLE_OWNER_PID, 0);
+                if (status == ERROR_INSUFFICIENT_BUFFER) continue;
+                if (status != 0) return;
+                ParseUdpTable(buffer, family);
+                return;
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(buffer);
+            }
+        }
+    }
+
+    private void ParseUdpTable(IntPtr buffer, int family)
+    {
+        {
             int count = Marshal.ReadInt32(buffer);
             int offset = 4;
             if (family == AF_INET)
@@ -254,10 +285,6 @@ public sealed class ProcessResolverService : IDisposable
                 }
             }
         }
-        finally
-        {
-            Marshal.FreeHGlobal(buffer);
-        }
     }
 
     private static int SwapPort(uint p) => ((int)(p & 0xFF) << 8) | (int)((p >> 8) & 0xFF);
@@ -265,8 +292,15 @@ public sealed class ProcessResolverService : IDisposable
     public void Dispose()
     {
         _disposed = true;
-        _refreshTimer.Dispose();
-        _pruneTimer.Dispose();
+        // Dispose(WaitHandle) дожидается выполняющегося коллбэка таймера
+        using (var wh = new ManualResetEvent(false))
+        {
+            if (_refreshTimer.Dispose(wh)) wh.WaitOne(1000);
+        }
+        using (var wh = new ManualResetEvent(false))
+        {
+            if (_pruneTimer.Dispose(wh)) wh.WaitOne(1000);
+        }
         _svchost.Dispose();
     }
 

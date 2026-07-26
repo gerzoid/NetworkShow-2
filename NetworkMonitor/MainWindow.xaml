@@ -15,12 +15,20 @@
 
         <ContextMenu x:Key="ConnectionRowMenu">
             <MenuItem Header="Копировать" Click="CopyConnection_Click" />
+            <MenuItem Header="Копировать IP" Click="CopyIp_Click" />
             <MenuItem Header="Перейти к файлу процесса" Click="OpenProcessFile_Click" />
+            <Separator />
+            <MenuItem Header="В чёрный список" Click="BlacklistIp_Click" />
+            <MenuItem Header="В белый список" Click="WhitelistIp_Click" />
         </ContextMenu>
 
         <ContextMenu x:Key="RemoteIpRowMenu">
             <MenuItem Header="Копировать" Click="CopyRemoteIp_Click" />
+            <MenuItem Header="Копировать IP" Click="CopyIp_Click" />
             <MenuItem Header="Перейти к файлу процесса" Click="OpenProcessFileRemoteIp_Click" />
+            <Separator />
+            <MenuItem Header="В чёрный список" Click="BlacklistIp_Click" />
+            <MenuItem Header="В белый список" Click="WhitelistIp_Click" />
         </ContextMenu>
 
         <Style x:Key="ConnectionRowStyle" TargetType="DataGridRow" BasedOn="{StaticResource {x:Type DataGridRow}}">
@@ -53,6 +61,9 @@
                 <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
                     <TextBlock Text="Интерфейс:" VerticalAlignment="Center" Margin="0,0,6,0" Foreground="{DynamicResource MutedBrush}" />
                     <ComboBox Width="320" ItemsSource="{Binding Interfaces}" SelectedItem="{Binding SelectedInterface}" />
+                    <Button Content="⟳" Command="{Binding RefreshInterfacesCommand}" Style="{DynamicResource GhostButton}"
+                            Margin="4,0,0,0" ToolTip="Обновить список интерфейсов (после подключения VPN или адаптера)"
+                            IsEnabled="{Binding IsCapturing, Converter={StaticResource InverseBoolConverter}}" />
                     <Button Content="Запустить" Command="{Binding StartCommand}" Margin="8,0,4,0"
                             IsEnabled="{Binding IsCapturing, Converter={StaticResource InverseBoolConverter}}" />
                     <Button Content="Стоп" Command="{Binding StopCommand}" Style="{DynamicResource DangerButton}"
@@ -223,7 +234,12 @@
             <!-- Tabs -->
             <TabControl Grid.Column="1">
                 <TabItem Header="Соединения">
-                    <DataGrid ItemsSource="{Binding ConnectionsView}" RowStyle="{StaticResource ConnectionRowStyle}">
+                    <!-- IsVirtualizingWhenGrouping: группировка иначе отключает виртуализацию,
+                         и выбор «По процессу» на тысячах строк замораживает UI -->
+                    <DataGrid ItemsSource="{Binding ConnectionsView}" RowStyle="{StaticResource ConnectionRowStyle}"
+                              IsReadOnly="True"
+                              EnableRowVirtualization="True"
+                              VirtualizingPanel.IsVirtualizingWhenGrouping="True">
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="Зона" Binding="{Binding ScopeText}" Width="80" />
                             <DataGridTextColumn Header="Процесс" Binding="{Binding ProcessName}" Width="140" />
@@ -244,7 +260,7 @@
                 </TabItem>
 
                 <TabItem Header="IP-адреса">
-                    <DataGrid ItemsSource="{Binding RemoteIpsView}" RowStyle="{StaticResource RemoteIpRowStyle}">
+                    <DataGrid ItemsSource="{Binding RemoteIpsView}" RowStyle="{StaticResource RemoteIpRowStyle}" IsReadOnly="True">
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="IP" Binding="{Binding Ip}" Width="140" />
                             <DataGridTextColumn Header="Хост (DNS)" Binding="{Binding RemoteHost}" Width="220" />
@@ -273,7 +289,7 @@
                 </TabItem>
 
                 <TabItem Header="Уведомления">
-                    <DataGrid ItemsSource="{Binding Notifications}">
+                    <DataGrid ItemsSource="{Binding Notifications}" IsReadOnly="True">
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="Время" Binding="{Binding TimeText}" Width="90" />
                             <DataGridTextColumn Header="Уровень" Binding="{Binding SeverityText}" Width="100" />

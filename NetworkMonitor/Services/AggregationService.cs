@@ -156,6 +156,7 @@ public sealed class AggregationService
         var procEntry = _byProcess.GetOrAdd(process, _ => new ProcessStats { Process = process });
         Interlocked.Add(ref procEntry.Bytes, r.Size);
         Interlocked.Increment(ref procEntry.Packets);
+        Volatile.Write(ref procEntry.LastSeenTicks, DateTime.Now.Ticks);
     }
 
     public (long BytesIn, long BytesOut) SampleAndResetInterval()
@@ -206,6 +207,22 @@ public sealed class AggregationService
             }
         }
 
+        // Счётчик соединений у IP инкрементируется при создании — корректируем при удалении
+        if (removedConns is { Count: > 0 })
+        {
+            foreach (var c in removedConns)
+            {
+                if (_byIp.TryGetValue(c.RemoteIp, out var ipEntry) && ipEntry.Connections > 0)
+                    ipEntry.Connections--;
+            }
+        }
+
+        foreach (var kv in _byProcess)
+        {
+            if (Volatile.Read(ref kv.Value.LastSeenTicks) < cutoff.Ticks)
+                _byProcess.TryRemove(kv.Key, out _);
+        }
+
         if (removedConns is { Count: > 0 })
         {
             try { ConnectionsPruned?.Invoke(this, removedConns); } catch { }
@@ -240,4 +257,5 @@ public sealed class ProcessStats
     public string Process { get; init; } = string.Empty;
     public long Bytes;
     public long Packets;
+    public long LastSeenTicks;
 }

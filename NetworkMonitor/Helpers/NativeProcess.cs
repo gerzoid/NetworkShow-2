@@ -23,14 +23,21 @@ internal static class NativeProcess
     public static string? TryGetImagePath(int pid)
     {
         if (pid <= 0) return null;
+        const int ERROR_INSUFFICIENT_BUFFER = 122;
         var handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
         if (handle == IntPtr.Zero) return null;
         try
         {
-            var sb = new StringBuilder(1024);
-            uint size = (uint)sb.Capacity;
-            if (!QueryFullProcessImageName(handle, 0, sb, ref size)) return null;
-            return sb.ToString(0, (int)size);
+            // 32767 — предел длины пути NT; повтор нужен при включённых long paths
+            foreach (var capacity in new[] { 1024, 32767 })
+            {
+                var sb = new StringBuilder(capacity);
+                uint size = (uint)sb.Capacity;
+                if (QueryFullProcessImageName(handle, 0, sb, ref size))
+                    return sb.ToString(0, (int)size);
+                if (Marshal.GetLastWin32Error() != ERROR_INSUFFICIENT_BUFFER) return null;
+            }
+            return null;
         }
         finally
         {

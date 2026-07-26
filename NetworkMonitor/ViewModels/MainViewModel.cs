@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -42,7 +43,15 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private readonly Dictionary<string, List<ConnectionAggregate>> _byRemoteIp = new();
     private readonly Dictionary<string, RemoteIpAggregate> _ipIndex = new();
     private readonly ObservableCollection<TrafficNotification> _notificationItems = new();
+    private readonly EventHandler<Themes.AppTheme> _themeChangedHandler;
     private int _inactivityRefreshCounter;
+    // Инкремент при Clear(): отложенные BeginInvoke со старым поколением пропускаются,
+    // иначе в таблицу попадают строки, которых уже нет в агрегации
+    private int _clearGeneration;
+    private long _lastUiTickTimestamp;
+
+    /// <summary>Окно скрыто в трее — тяжёлые обновления UI (график, топы, Refresh) не нужны.</summary>
+    public bool UiUpdatesSuspended { get; set; }
 
     public ObservableCollection<ConnectionAggregate> Connections { get; } = new();
     public ICollectionView ConnectionsView { get; }
@@ -77,10 +86,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private string totalBytesOutText = "0 B";
 
     [ObservableProperty]
-    private string speedInText = "0 B/c";
+    private string speedInText = "0 B/s";
 
     [ObservableProperty]
-    private string speedOutText = "0 B/c";
+    private string speedOutText = "0 B/s";
 
     [ObservableProperty]
     private string statusText = "Готов. Запустите захват, выбрав интерфейс.";
@@ -196,8 +205,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         };
 
         ApplyChartTheme(Themes.ThemeManager.Current);
-        Themes.ThemeManager.ThemeChanged += (_, t) => _dispatcher.BeginInvoke(() => ApplyChartTheme(t));
+        _themeChangedHandler = (_, t) => _dispatcher.BeginInvoke(() => ApplyChartTheme(t));
+        Themes.ThemeManager.ThemeChanged += _themeChangedHandler;
 
+        ApplySavedSettings();
         LoadInterfaces();
 
         if (_etwTracker.TryStart())
@@ -212,19 +223,44 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _uiTimer.Tick += UiTick;
         _uiTimer.Start();
 
-        _pruneTimer = new Timer(_ => _aggregation.Prune(ConnectionInactivityTimeout),
-            null, PruneInterval, PruneInterval);
+        _pruneTimer = new Timer(_ =>
+        {
+            _aggregation.Prune(ConnectionInactivityTimeout);
+            _dns.Prune();
+            _notifications.Prune(TimeSpan.FromHours(24));
+        }, null, PruneInterval, PruneInterval);
+    }
+
+    private void ApplySavedSettings()
+    {
+        var s = SettingsService.Current;
+        foreach (var entry in s.Blacklist) _notifications.AddToBlacklist(entry);
+        foreach (var entry in s.Whitelist) _notifications.AddToWhitelist(entry);
+        LogToFile = s.LogToFile;
+        if (Enum.TryParse<LogFormat>(s.LogFormat, out var fmt) && LogFormatOptions.Contains(fmt))
+            LogFormat = fmt;
+        if (ProtocolOptions.Contains(s.ProtocolFilter)) ProtocolFilter = s.ProtocolFilter;
+        if (ScopeOptions.Contains(s.ScopeFilter)) ScopeFilter = s.ScopeFilter;
+        if (GroupingOptions.Contains(s.Grouping)) SelectedGrouping = s.Grouping;
+        HideUnknownProcess = s.HideUnknownProcess;
     }
 
     public void LoadInterfaces()
     {
+        var preferred = SelectedInterface?.Name ?? SettingsService.Current.InterfaceName;
         Interfaces.Clear();
         foreach (var i in _captureService.ListInterfaces())
             Interfaces.Add(i);
-        if (SelectedInterface is null && Interfaces.Count > 0)
-            SelectedInterface = Interfaces[0];
+        SelectedInterface = Interfaces.FirstOrDefault(i => i.Name == preferred) ?? Interfaces.FirstOrDefault();
         if (Interfaces.Count == 0)
             StatusText = "Сетевые интерфейсы не найдены. Установите Npcap (https://npcap.com).";
+    }
+
+    [RelayCommand]
+    private void RefreshInterfaces()
+    {
+        LoadInterfaces();
+        StatusText = $"Список интерфейсов обновлён ({Interfaces.Count}).";
     }
 
     [RelayCommand]
@@ -265,6 +301,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         catch { }
         finally
         {
+            _consumerCts?.Dispose();
+            _consumerCts = null;
             IsCapturing = false;
             IsPaused = false;
             _logging.Flush();
@@ -307,6 +345,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     [RelayCommand]
     private void Clear()
     {
+        Interlocked.Increment(ref _clearGeneration);
         Connections.Clear();
         RemoteIps.Clear();
         _ipIndex.Clear();
@@ -324,12 +363,16 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     }
 
     [RelayCommand]
-    private void Export()
+    private async Task Export()
     {
         try
         {
-            var snapshot = _aggregation.Connections.OrderByDescending(c => c.Bytes).ToList();
-            var path = _logging.ExportConnections(snapshot, LogFormat);
+            var format = LogFormat;
+            var path = await Task.Run(() =>
+            {
+                var snapshot = _aggregation.Connections.OrderByDescending(c => c.Bytes).ToList();
+                return _logging.ExportConnections(snapshot, format);
+            });
             StatusText = $"Экспортировано: {path}";
         }
         catch (Exception ex)
@@ -345,23 +388,31 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private void ToggleTheme() => Themes.ThemeManager.Toggle();
 
     [RelayCommand]
-    private void AddBlacklist()
-    {
-        if (!string.IsNullOrWhiteSpace(IpFilter))
-        {
-            _notifications.AddToBlacklist(IpFilter.Trim());
-            StatusText = $"Добавлено в чёрный список: {IpFilter}";
-        }
-    }
+    private void AddBlacklist() => AddIpToBlacklist(IpFilter);
 
     [RelayCommand]
-    private void AddWhitelist()
+    private void AddWhitelist() => AddIpToWhitelist(IpFilter);
+
+    public void AddIpToBlacklist(string entry)
     {
-        if (!string.IsNullOrWhiteSpace(IpFilter))
-        {
-            _notifications.AddToWhitelist(IpFilter.Trim());
-            StatusText = $"Добавлено в белый список: {IpFilter}";
-        }
+        if (string.IsNullOrWhiteSpace(entry)) return;
+        entry = entry.Trim();
+        _notifications.AddToBlacklist(entry);
+        var list = SettingsService.Current.Blacklist;
+        if (!list.Contains(entry, StringComparer.OrdinalIgnoreCase)) list.Add(entry);
+        SettingsService.Save();
+        StatusText = $"Добавлено в чёрный список: {entry}";
+    }
+
+    public void AddIpToWhitelist(string entry)
+    {
+        if (string.IsNullOrWhiteSpace(entry)) return;
+        entry = entry.Trim();
+        _notifications.AddToWhitelist(entry);
+        var list = SettingsService.Current.Whitelist;
+        if (!list.Contains(entry, StringComparer.OrdinalIgnoreCase)) list.Add(entry);
+        SettingsService.Save();
+        StatusText = $"Добавлено в белый список: {entry}";
     }
 
     private async Task ConsumeLoop(CancellationToken token)
@@ -402,8 +453,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             _dns.Enqueue(conn.RemoteIp);
         }
 
+        var generation = Volatile.Read(ref _clearGeneration);
         _dispatcher.BeginInvoke(() =>
         {
+            if (generation != Volatile.Read(ref _clearGeneration)) return;
             if (_connectionKeys.Add(conn.Key))
             {
                 Connections.Add(conn);
@@ -423,8 +476,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         if (cached is not null) ip.RemoteHost = cached;
         else _dns.Enqueue(ip.Ip);
 
+        var generation = Volatile.Read(ref _clearGeneration);
         _dispatcher.BeginInvoke(() =>
         {
+            if (generation != Volatile.Read(ref _clearGeneration)) return;
             if (_ipIndex.TryAdd(ip.Ip, ip))
                 RemoteIps.Add(ip);
         });
@@ -496,11 +551,25 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private void UiTick(object? sender, EventArgs e)
     {
         var (bIn, bOut) = _aggregation.SampleAndResetInterval();
-        long ratePerSec = (bIn + bOut) * 2;
-        _notifications.RecordTrafficSample(ratePerSec);
 
-        SpeedInText = ByteFormatter.FormatRate(bIn * 2);
-        SpeedOutText = ByteFormatter.FormatRate(bOut * 2);
+        // Делим на фактически прошедшее время: под нагрузкой Background-таймер
+        // тикает реже 500 мс, и «bytes * 2» завышал бы скорость
+        var timestamp = Stopwatch.GetTimestamp();
+        double seconds = _lastUiTickTimestamp == 0
+            ? 0.5
+            : (timestamp - _lastUiTickTimestamp) / (double)Stopwatch.Frequency;
+        _lastUiTickTimestamp = timestamp;
+        if (seconds < 0.05) seconds = 0.5;
+
+        long rateIn = (long)(bIn / seconds);
+        long rateOut = (long)(bOut / seconds);
+        _notifications.RecordTrafficSample(rateIn + rateOut);
+
+        SpeedInText = ByteFormatter.FormatRate(rateIn);
+        SpeedOutText = ByteFormatter.FormatRate(rateOut);
+
+        if (UiUpdatesSuspended) return;
+
         TotalBytesInText = ByteFormatter.Format(_aggregation.TotalBytesIn);
         TotalBytesOutText = ByteFormatter.Format(_aggregation.TotalBytesOut);
         TotalPackets = _aggregation.TotalPackets;
@@ -508,8 +577,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         ConnectionCount = Connections.Count;
 
         var now = DateTime.Now;
-        _speedInPoints.Add(new DateTimePoint(now, bIn * 2));
-        _speedOutPoints.Add(new DateTimePoint(now, bOut * 2));
+        _speedInPoints.Add(new DateTimePoint(now, rateIn));
+        _speedOutPoints.Add(new DateTimePoint(now, rateOut));
         while (_speedInPoints.Count > 120) _speedInPoints.RemoveAt(0);
         while (_speedOutPoints.Count > 120) _speedOutPoints.RemoveAt(0);
 
@@ -551,18 +620,37 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     private void UpdateTopLists()
     {
-        var topIps = _aggregation.TopIps(10);
-        TopIps.Clear();
-        foreach (var t in topIps)
+        var fresh = new List<TopEntry>(10);
+        foreach (var t in _aggregation.TopIps(10))
         {
             var label = string.IsNullOrEmpty(t.RemoteHost) || t.RemoteHost == t.Ip ? t.Ip : t.RemoteHost;
-            TopIps.Add(new TopEntry { Key = label, Bytes = t.Bytes, Display = ByteFormatter.Format(t.Bytes) });
+            fresh.Add(new TopEntry { Key = label, Bytes = t.Bytes, Display = ByteFormatter.Format(t.Bytes) });
         }
+        SyncTopList(TopIps, fresh);
 
-        var topProc = _aggregation.TopProcesses(10);
-        TopProcesses.Clear();
-        foreach (var t in topProc)
-            TopProcesses.Add(new TopEntry { Key = t.Process, Bytes = t.Bytes, Display = ByteFormatter.Format(t.Bytes) });
+        fresh = new List<TopEntry>(10);
+        foreach (var t in _aggregation.TopProcesses(10))
+            fresh.Add(new TopEntry { Key = t.Process, Bytes = t.Bytes, Display = ByteFormatter.Format(t.Bytes) });
+        SyncTopList(TopProcesses, fresh);
+    }
+
+    // Точечное обновление вместо Clear+Add — иначе оба списка полностью
+    // перерисовываются дважды в секунду, даже когда ничего не изменилось
+    private static void SyncTopList(ObservableCollection<TopEntry> target, List<TopEntry> fresh)
+    {
+        for (int i = 0; i < fresh.Count; i++)
+        {
+            if (i < target.Count)
+            {
+                if (target[i] != fresh[i]) target[i] = fresh[i];
+            }
+            else
+            {
+                target.Add(fresh[i]);
+            }
+        }
+        while (target.Count > fresh.Count)
+            target.RemoveAt(target.Count - 1);
     }
 
     private bool FilterConnection(object obj)
@@ -625,12 +713,36 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     partial void OnIpRangeFromChanged(string value) => RefreshFilter();
     partial void OnIpRangeToChanged(string value) => RefreshFilter();
     partial void OnProcessFilterChanged(string value) => RefreshFilter();
-    partial void OnProtocolFilterChanged(string value) => RefreshFilter();
-    partial void OnHideUnknownProcessChanged(bool value) => RefreshFilter();
-    partial void OnScopeFilterChanged(string value) => RefreshFilter();
+
+    partial void OnProtocolFilterChanged(string value)
+    {
+        SettingsService.Current.ProtocolFilter = value;
+        RefreshFilter();
+    }
+
+    partial void OnHideUnknownProcessChanged(bool value)
+    {
+        SettingsService.Current.HideUnknownProcess = value;
+        RefreshFilter();
+    }
+
+    partial void OnScopeFilterChanged(string value)
+    {
+        SettingsService.Current.ScopeFilter = value;
+        RefreshFilter();
+    }
+
+    partial void OnSelectedInterfaceChanged(NetworkInterfaceInfo? value)
+    {
+        if (value is not null) SettingsService.Current.InterfaceName = value.Name;
+    }
+
+    partial void OnLogToFileChanged(bool value) => SettingsService.Current.LogToFile = value;
+    partial void OnLogFormatChanged(LogFormat value) => SettingsService.Current.LogFormat = value.ToString();
 
     partial void OnSelectedGroupingChanged(string value)
     {
+        SettingsService.Current.Grouping = value;
         ConnectionsView.GroupDescriptions.Clear();
         switch (value)
         {
@@ -652,17 +764,30 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     public void Dispose()
     {
         _uiTimer.Stop();
-        _pruneTimer.Dispose();
+        using (var wh = new ManualResetEvent(false))
+        {
+            if (_pruneTimer.Dispose(wh)) wh.WaitOne(1000);
+        }
         Stop();
+
+        Themes.ThemeManager.ThemeChanged -= _themeChangedHandler;
+        _notifications.NotificationRaised -= OnNotificationRaised;
+        _aggregation.ConnectionCreated -= OnConnectionCreated;
+        _aggregation.RemoteIpCreated -= OnRemoteIpCreated;
+        _aggregation.ConnectionsPruned -= OnConnectionsPruned;
+        _aggregation.RemoteIpsPruned -= OnRemoteIpsPruned;
+        _dns.Resolved -= OnDnsResolved;
+
         _captureService.Dispose();
         _etwTracker.Dispose();
         _processResolver.Dispose();
         _logging.Dispose();
         _dns.Dispose();
+        _consumerCts?.Dispose();
     }
 }
 
-public sealed class TopEntry
+public sealed record TopEntry
 {
     public string Key { get; init; } = string.Empty;
     public long Bytes { get; init; }
