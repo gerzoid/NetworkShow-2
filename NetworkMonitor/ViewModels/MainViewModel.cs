@@ -61,6 +61,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     public ObservableCollection<NetworkInterfaceInfo> Interfaces { get; } = new();
     public ObservableCollection<TopEntry> TopIps { get; } = new();
     public ObservableCollection<TopEntry> TopProcesses { get; } = new();
+    public ObservableCollection<string> BlacklistEntries { get; } = new();
+    public ObservableCollection<string> WhitelistEntries { get; } = new();
 
     public string[] ProtocolOptions { get; } = { "All", "TCP", "UDP" };
     public string[] ScopeOptions { get; } = { "Все", "Только локальный", "Только внешний" };
@@ -234,8 +236,16 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private void ApplySavedSettings()
     {
         var s = SettingsService.Current;
-        foreach (var entry in s.Blacklist) _notifications.AddToBlacklist(entry);
-        foreach (var entry in s.Whitelist) _notifications.AddToWhitelist(entry);
+        foreach (var entry in s.Blacklist)
+        {
+            _notifications.AddToBlacklist(entry);
+            if (!BlacklistEntries.Contains(entry)) BlacklistEntries.Add(entry);
+        }
+        foreach (var entry in s.Whitelist)
+        {
+            _notifications.AddToWhitelist(entry);
+            if (!WhitelistEntries.Contains(entry)) WhitelistEntries.Add(entry);
+        }
         LogToFile = s.LogToFile;
         if (Enum.TryParse<LogFormat>(s.LogFormat, out var fmt) && LogFormatOptions.Contains(fmt))
             LogFormat = fmt;
@@ -368,6 +378,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         try
         {
             var format = LogFormat;
+            _aggregation.PublishCounters(); // при свёрнутом окне тик UI не публикует счётчики
             var path = await Task.Run(() =>
             {
                 var snapshot = _aggregation.Connections.OrderByDescending(c => c.Bytes).ToList();
@@ -400,6 +411,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _notifications.AddToBlacklist(entry);
         var list = SettingsService.Current.Blacklist;
         if (!list.Contains(entry, StringComparer.OrdinalIgnoreCase)) list.Add(entry);
+        if (!BlacklistEntries.Contains(entry)) BlacklistEntries.Add(entry);
         SettingsService.Save();
         StatusText = $"Добавлено в чёрный список: {entry}";
     }
@@ -411,8 +423,31 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _notifications.AddToWhitelist(entry);
         var list = SettingsService.Current.Whitelist;
         if (!list.Contains(entry, StringComparer.OrdinalIgnoreCase)) list.Add(entry);
+        if (!WhitelistEntries.Contains(entry)) WhitelistEntries.Add(entry);
         SettingsService.Save();
         StatusText = $"Добавлено в белый список: {entry}";
+    }
+
+    [RelayCommand]
+    private void RemoveBlacklistEntry(string entry)
+    {
+        if (string.IsNullOrWhiteSpace(entry)) return;
+        _notifications.RemoveFromBlacklist(entry);
+        BlacklistEntries.Remove(entry);
+        SettingsService.Current.Blacklist.RemoveAll(x => string.Equals(x, entry, StringComparison.OrdinalIgnoreCase));
+        SettingsService.Save();
+        StatusText = $"Удалено из чёрного списка: {entry}";
+    }
+
+    [RelayCommand]
+    private void RemoveWhitelistEntry(string entry)
+    {
+        if (string.IsNullOrWhiteSpace(entry)) return;
+        _notifications.RemoveFromWhitelist(entry);
+        WhitelistEntries.Remove(entry);
+        SettingsService.Current.Whitelist.RemoveAll(x => string.Equals(x, entry, StringComparison.OrdinalIgnoreCase));
+        SettingsService.Save();
+        StatusText = $"Удалено из белого списка: {entry}";
     }
 
     private async Task ConsumeLoop(CancellationToken token)
@@ -575,6 +610,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         TotalPackets = _aggregation.TotalPackets;
         DroppedPackets = _captureService.DroppedPackets;
         ConnectionCount = Connections.Count;
+        _aggregation.PublishCounters();
 
         var now = DateTime.Now;
         _speedInPoints.Add(new DateTimePoint(now, rateIn));

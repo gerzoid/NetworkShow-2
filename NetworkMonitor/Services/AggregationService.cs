@@ -10,7 +10,10 @@ namespace NetworkMonitor.Services;
 
 public sealed class AggregationService
 {
-    private readonly ConcurrentDictionary<string, ConnectionAggregate> _connections = new();
+    // Структурный ключ: строковый ConnectionAggregate.Key собирается только при создании соединения
+    private readonly record struct ConnectionKey(string Protocol, string LocalIp, int LocalPort, string RemoteIp, int RemotePort);
+
+    private readonly ConcurrentDictionary<ConnectionKey, ConnectionAggregate> _connections = new();
     private readonly ConcurrentDictionary<string, RemoteIpAggregate> _byIp = new();
     private readonly ConcurrentDictionary<string, ProcessStats> _byProcess = new();
 
@@ -79,14 +82,15 @@ public sealed class AggregationService
             remotePort = r.DestinationPort;
         }
 
-        var key = $"{r.Protocol}|{localIp}:{localPort}|{remoteIp}:{remotePort}";
+        var key = new ConnectionKey(r.Protocol, localIp, localPort, remoteIp, remotePort);
         bool created = false;
-        var conn = _connections.GetOrAdd(key, k =>
+        // TryGetValue + GetOrAdd(значение) вместо GetOrAdd(лямбда): лямбда с захватом
+        // создавала бы замыкание на каждый пакет, даже когда соединение уже есть
+        if (!_connections.TryGetValue(key, out var conn))
         {
-            created = true;
-            return new ConnectionAggregate
+            var fresh = new ConnectionAggregate
             {
-                Key = k,
+                Key = $"{r.Protocol}|{localIp}:{localPort}|{remoteIp}:{remotePort}",
                 LocalIp = localIp,
                 LocalPort = localPort,
                 RemoteIp = remoteIp,
@@ -97,16 +101,18 @@ public sealed class AggregationService
                 ProcessName = r.ProcessName,
                 ProcessId = r.ProcessId,
                 FirstSeen = r.Timestamp,
-                LastSeen = r.Timestamp
+                LastSeen = r.Timestamp,
+                LiveLastSeen = r.Timestamp // иначе Prune может удалить запись до первого инкремента
             };
-        });
+            conn = _connections.GetOrAdd(key, fresh);
+            created = ReferenceEquals(conn, fresh);
+        }
 
-        conn.Packets++;
-        conn.Bytes += r.Size;
-        if (isInbound) conn.BytesIn += r.Size;
-        else if (isOutbound) conn.BytesOut += r.Size;
-        else conn.BytesIn += r.Size;
-        conn.LastSeen = r.Timestamp;
+        conn.LivePackets++;
+        conn.LiveBytes += r.Size;
+        if (isOutbound) conn.LiveBytesOut += r.Size;
+        else conn.LiveBytesIn += r.Size;
+        conn.LiveLastSeen = r.Timestamp;
         if (IsWeakName(conn.ProcessName) && IsStrongName(r.ProcessName))
         {
             conn.ProcessName = r.ProcessName;
@@ -123,23 +129,24 @@ public sealed class AggregationService
         }
 
         bool ipCreated = false;
-        var ipEntry = _byIp.GetOrAdd(remoteIp, ip =>
+        if (!_byIp.TryGetValue(remoteIp, out var ipEntry))
         {
-            ipCreated = true;
-            return new RemoteIpAggregate
+            var fresh = new RemoteIpAggregate
             {
-                Ip = ip,
-                Scope = IpClassifier.Classify(ip),
+                Ip = remoteIp,
+                Scope = IpClassifier.Classify(remoteIp),
                 FirstSeen = r.Timestamp,
-                LastSeen = r.Timestamp
+                LastSeen = r.Timestamp,
+                LiveLastSeen = r.Timestamp // иначе Prune может удалить запись до первого инкремента
             };
-        });
-        ipEntry.Bytes += r.Size;
-        if (isInbound) ipEntry.BytesIn += r.Size;
-        else if (isOutbound) ipEntry.BytesOut += r.Size;
-        else ipEntry.BytesIn += r.Size;
-        ipEntry.Packets++;
-        ipEntry.LastSeen = r.Timestamp;
+            ipEntry = _byIp.GetOrAdd(remoteIp, fresh);
+            ipCreated = ReferenceEquals(ipEntry, fresh);
+        }
+        ipEntry.LiveBytes += r.Size;
+        if (isOutbound) ipEntry.LiveBytesOut += r.Size;
+        else ipEntry.LiveBytesIn += r.Size;
+        ipEntry.LivePackets++;
+        ipEntry.LiveLastSeen = r.Timestamp;
         if (created) ipEntry.Connections++;
         if (IsWeakName(ipEntry.TopProcess) && IsStrongName(r.ProcessName))
         {
@@ -153,10 +160,22 @@ public sealed class AggregationService
         }
 
         var process = string.IsNullOrEmpty(r.ProcessName) ? "unknown" : r.ProcessName;
-        var procEntry = _byProcess.GetOrAdd(process, _ => new ProcessStats { Process = process });
+        if (!_byProcess.TryGetValue(process, out var procEntry))
+            procEntry = _byProcess.GetOrAdd(process, new ProcessStats { Process = process });
         Interlocked.Add(ref procEntry.Bytes, r.Size);
         Interlocked.Increment(ref procEntry.Packets);
-        Volatile.Write(ref procEntry.LastSeenTicks, DateTime.Now.Ticks);
+        Volatile.Write(ref procEntry.LastSeenTicks, r.Timestamp.Ticks); // локальное время, как в Prune
+    }
+
+    /// <summary>
+    /// Переносит живые счётчики в привязанные свойства. Вызывается из UI-потока по таймеру:
+    /// PropertyChanged — раз в тик на изменившуюся строку, а не на каждый пакет.
+    /// </summary>
+    public void PublishCounters()
+    {
+        // Перечисление ConcurrentDictionary без снимка (в отличие от .Values) — без блокировок и копии
+        foreach (var kv in _connections) kv.Value.PublishCounters();
+        foreach (var kv in _byIp) kv.Value.PublishCounters();
     }
 
     public (long BytesIn, long BytesOut) SampleAndResetInterval()
@@ -167,7 +186,7 @@ public sealed class AggregationService
     }
 
     public IReadOnlyList<RemoteIpAggregate> TopIps(int count) =>
-        _byIp.Values.OrderByDescending(x => x.Bytes).Take(count).ToList();
+        _byIp.Values.OrderByDescending(x => x.LiveBytes).Take(count).ToList();
 
     public IReadOnlyDictionary<IpScope, long> BytesByScope()
     {
@@ -175,7 +194,7 @@ public sealed class AggregationService
         foreach (var ip in _byIp.Values)
         {
             dict.TryGetValue(ip.Scope, out var v);
-            dict[ip.Scope] = v + ip.Bytes;
+            dict[ip.Scope] = v + ip.LiveBytes;
         }
         return dict;
     }
@@ -190,7 +209,7 @@ public sealed class AggregationService
         List<ConnectionAggregate>? removedConns = null;
         foreach (var kv in _connections)
         {
-            if (kv.Value.LastSeen < cutoff && _connections.TryRemove(kv.Key, out var c))
+            if (kv.Value.LiveLastSeen < cutoff && _connections.TryRemove(kv.Key, out var c))
             {
                 removedConns ??= new List<ConnectionAggregate>();
                 removedConns.Add(c);
@@ -200,7 +219,7 @@ public sealed class AggregationService
         List<RemoteIpAggregate>? removedIps = null;
         foreach (var kv in _byIp)
         {
-            if (kv.Value.LastSeen < cutoff && _byIp.TryRemove(kv.Key, out var ip))
+            if (kv.Value.LiveLastSeen < cutoff && _byIp.TryRemove(kv.Key, out var ip))
             {
                 removedIps ??= new List<RemoteIpAggregate>();
                 removedIps.Add(ip);

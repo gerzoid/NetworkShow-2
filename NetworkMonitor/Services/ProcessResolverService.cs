@@ -21,7 +21,7 @@ public sealed class ProcessResolverService : IDisposable
     // Windows переиспользует PID — без TTL трафик нового процесса подписывался бы именем умершего
     private static readonly TimeSpan PidNameTtl = TimeSpan.FromSeconds(30);
 
-    private readonly ConcurrentDictionary<string, Entry> _cache = new();
+    private readonly ConcurrentDictionary<Key, Entry> _cache = new();
     private readonly ConcurrentDictionary<int, (string Name, DateTime CachedAt)> _pidNameCache = new();
     private readonly SvchostServiceResolver _svchost = new();
     private readonly Timer _refreshTimer;
@@ -32,6 +32,8 @@ public sealed class ProcessResolverService : IDisposable
     private volatile bool _disposed;
 
     private record struct Entry(int Pid, string Name, DateTime LastSeen);
+    // Структурный ключ вместо строки «proto|ip|port»: поиск на каждый пакет без аллокаций
+    private readonly record struct Key(string Protocol, string Ip, int Port);
 
     public ProcessResolverService()
     {
@@ -133,7 +135,7 @@ public sealed class ProcessResolverService : IDisposable
         }
     }
 
-    private static string MakeKey(string protocol, string ip, int port) => $"{protocol}|{ip}|{port}";
+    private static Key MakeKey(string protocol, string ip, int port) => new(protocol, ip, port);
 
     private string PidToName(int pid)
     {

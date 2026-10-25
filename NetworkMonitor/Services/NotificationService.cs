@@ -63,6 +63,34 @@ public sealed class NotificationService
         TryAddCidr(entry, ref _blacklistCidrs);
     }
 
+    public void RemoveFromWhitelist(string entry)
+    {
+        if (string.IsNullOrWhiteSpace(entry)) return;
+        _whitelist.TryRemove(entry.Trim(), out _);
+        RebuildCidrs(_whitelist, ref _whitelistCidrs);
+    }
+
+    public void RemoveFromBlacklist(string entry)
+    {
+        if (string.IsNullOrWhiteSpace(entry)) return;
+        _blacklist.TryRemove(entry.Trim(), out _);
+        RebuildCidrs(_blacklist, ref _blacklistCidrs);
+    }
+
+    private void RebuildCidrs(ConcurrentDictionary<string, byte> source, ref (IPAddress Network, int Prefix)[] target)
+    {
+        lock (_cidrLock)
+        {
+            var list = new List<(IPAddress, int)>();
+            foreach (var entry in source.Keys)
+            {
+                if (entry.Contains('/') && IpRangeHelper.TryParseCidr(entry, out var net, out var prefix))
+                    list.Add((net, prefix));
+            }
+            System.Threading.Volatile.Write(ref target, list.ToArray());
+        }
+    }
+
     private void TryAddCidr(string entry, ref (IPAddress Network, int Prefix)[] target)
     {
         if (!entry.Contains('/')) return;

@@ -37,6 +37,22 @@ public sealed partial class RemoteIpAggregate : ObservableObject
     [ObservableProperty]
     private int topProcessId;
 
+    // См. ConnectionAggregate: счётчики на каждый пакет, публикация по таймеру UI
+    internal long LiveBytes;
+    internal long LiveBytesIn;
+    internal long LiveBytesOut;
+    internal long LivePackets;
+    internal DateTime LiveLastSeen;
+
+    public void PublishCounters()
+    {
+        Bytes = LiveBytes;
+        BytesIn = LiveBytesIn;
+        BytesOut = LiveBytesOut;
+        Packets = LivePackets;
+        LastSeen = LiveLastSeen;
+    }
+
     public string ScopeText => IpClassifier.Display(Scope);
     public bool IsLocal => IpClassifier.IsLocal(Scope);
 

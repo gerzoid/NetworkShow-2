@@ -17,6 +17,23 @@ public sealed partial class ConnectionAggregate : ObservableObject
     public IpScope RemoteScope { get; init; }
     public DateTime FirstSeen { get; init; } = DateTime.Now;
 
+    // Живые счётчики: пишет поток агрегации на каждый пакет без PropertyChanged,
+    // в привязанные свойства их переносит PublishCounters() по таймеру UI
+    internal long LivePackets;
+    internal long LiveBytes;
+    internal long LiveBytesIn;
+    internal long LiveBytesOut;
+    internal DateTime LiveLastSeen;
+
+    public void PublishCounters()
+    {
+        Packets = LivePackets;
+        Bytes = LiveBytes;
+        BytesIn = LiveBytesIn;
+        BytesOut = LiveBytesOut;
+        LastSeen = LiveLastSeen;
+    }
+
     public string ScopeText => IpClassifier.Display(RemoteScope);
     public bool IsLocal => IpClassifier.IsLocal(RemoteScope);
 
