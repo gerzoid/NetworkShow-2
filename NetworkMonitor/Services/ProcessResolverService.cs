@@ -137,6 +137,9 @@ public sealed class ProcessResolverService : IDisposable
 
     private static Key MakeKey(string protocol, string ip, int port) => new(protocol, ip, port);
 
+    /// <summary>Имя процесса по PID (для DNS-событий ETW).</summary>
+    public string ResolvePidName(int pid) => PidToName(pid);
+
     private string PidToName(int pid)
     {
         var baseName = GetBaseName(pid);

@@ -15,6 +15,10 @@ public sealed class PacketRecord
     public int ProcessId { get; set; }
     public TrafficDirection Direction { get; init; }
     public string? Sni { get; init; }
+    /// <summary>Флаги TCP (SYN=0x02, ACK=0x10, RST=0x04, FIN=0x01); 0 для не-TCP.</summary>
+    public byte TcpFlags { get; init; }
+    /// <summary>Имя из DNS-запроса (UDP/53), только при включённом сборе сайтов.</summary>
+    public string? DnsName { get; init; }
 
     public string TimeText => Timestamp.ToString("HH:mm:ss.fff");
     public string DirectionText => Direction == TrafficDirection.Outbound ? "↑" : "↓";

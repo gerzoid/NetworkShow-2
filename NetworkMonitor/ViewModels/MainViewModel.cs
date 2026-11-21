@@ -29,6 +29,12 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private readonly AggregationService _aggregation;
     private readonly NotificationService _notifications;
     private readonly LoggingService _logging;
+    private readonly AnomalyDetectionService _anomaly;
+    private readonly LogonMonitor _logonMonitor;
+    private readonly ThreatFeedService _threatFeed;
+    private readonly DnsMonitorService _dnsMonitor;
+    // IP → имя, которое реально запрашивал клиент (точнее обратного DNS; работает и при скрытом SNI)
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> _queriedHosts = new();
     private readonly DnsResolverService _dns;
     private readonly Dispatcher _dispatcher;
     private readonly DispatcherTimer _uiTimer;
@@ -57,6 +63,27 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     public ICollectionView ConnectionsView { get; }
     public ObservableCollection<RemoteIpAggregate> RemoteIps { get; } = new();
     public ICollectionView RemoteIpsView { get; }
+    /// <summary>Уведомления с фильтром «только важные» (Warning/Critical) — Info («новый внешний IP») шумит.</summary>
+    public ICollectionView NotificationsView { get; }
+
+    [ObservableProperty]
+    private bool onlyImportantAlerts = true;
+
+    /// <summary>Непрочитанные важные уведомления — счётчик на вкладке; сбрасывается при открытии вкладки.</summary>
+    [ObservableProperty]
+    private int unreadAlerts;
+
+    private bool _notificationsTabActive;
+    public bool NotificationsTabActive
+    {
+        get => _notificationsTabActive;
+        set
+        {
+            if (SetProperty(ref _notificationsTabActive, value) && value) UnreadAlerts = 0;
+        }
+    }
+
+    partial void OnOnlyImportantAlertsChanged(bool value) => NotificationsView.Refresh();
     public ObservableCollection<TrafficNotification> Notifications => _notificationItems;
     public ObservableCollection<NetworkInterfaceInfo> Interfaces { get; } = new();
     public ObservableCollection<TopEntry> TopIps { get; } = new();
@@ -126,6 +153,18 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     [ObservableProperty]
     private bool logToFile;
 
+    /// <summary>Показ сайтов (SNI/DNS-имена). Выключено по умолчанию, включает только пользователь.</summary>
+    [ObservableProperty]
+    private bool collectSites;
+
+    /// <summary>Детекторы аномалий и мониторинг входов Windows.</summary>
+    [ObservableProperty]
+    private bool detectAnomalies = true;
+
+    /// <summary>Фид угроз (abuse.ch): сеть только при включении пользователем.</summary>
+    [ObservableProperty]
+    private bool useThreatFeed;
+
     [ObservableProperty]
     private LogFormat logFormat = LogFormat.Json;
 
@@ -139,6 +178,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     public ObservableCollection<Axis> SpeedXAxes { get; }
     public ObservableCollection<Axis> SpeedYAxes { get; }
 
+    /// <summary>Режим мониторинга доступа к SMB-шарам этого ПК.</summary>
+    public ShareAccessViewModel ShareAccess { get; }
+    public AnalyticsViewModel Analytics { get; }
+
     private readonly ObservableCollection<DateTimePoint> _speedInPoints = new();
     private readonly ObservableCollection<DateTimePoint> _speedOutPoints = new();
 
@@ -149,7 +192,17 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _etwTracker = new EtwConnectionTracker(_processResolver);
         _captureService = new PacketCaptureService(_processResolver);
         _aggregation = new AggregationService();
+        Analytics = new AnalyticsViewModel(() => _aggregation.Connections.ToList(), msg => StatusText = msg);
         _notifications = new NotificationService();
+        _anomaly = new AnomalyDetectionService(_notifications);
+        _logonMonitor = new LogonMonitor(_notifications);
+        _dnsMonitor = new DnsMonitorService(_processResolver);
+        _dnsMonitor.StatusChanged += msg => _dispatcher.BeginInvoke(() => StatusText = msg);
+        _dnsMonitor.Queried += (name, pid) => _anomaly.InspectDnsQuery(name, _dnsMonitor.ProcessName(pid));
+        _dnsMonitor.Answered += OnDnsAnswered;
+        _threatFeed = new ThreatFeedService(_notifications);
+        _threatFeed.StatusChanged += (_, msg) => _dispatcher.BeginInvoke(() => StatusText = msg);
+        _logonMonitor.StatusChanged += (_, msg) => _dispatcher.BeginInvoke(() => StatusText = msg);
         _logging = new LoggingService();
         _dns = new DnsResolverService();
 
@@ -160,12 +213,16 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _aggregation.ConnectionsPruned += OnConnectionsPruned;
         _aggregation.RemoteIpsPruned += OnRemoteIpsPruned;
         _dns.Resolved += OnDnsResolved;
+        ShareAccess = new ShareAccessViewModel();
+        ShareAccess.Alert += OnNotificationRaised;
 
         ConnectionsView = CollectionViewSource.GetDefaultView(Connections);
         ConnectionsView.Filter = FilterConnection;
         ConnectionsView.SortDescriptions.Add(new SortDescription(nameof(ConnectionAggregate.LastSeen), ListSortDirection.Descending));
 
         RemoteIpsView = CollectionViewSource.GetDefaultView(RemoteIps);
+        NotificationsView = CollectionViewSource.GetDefaultView(_notificationItems);
+        NotificationsView.Filter = o => !OnlyImportantAlerts || o is not TrafficNotification { Severity: NotificationSeverity.Info };
         RemoteIpsView.SortDescriptions.Add(new SortDescription(nameof(RemoteIpAggregate.Bytes), ListSortDirection.Descending));
 
         SpeedSeries = new ObservableCollection<ISeries>
@@ -225,6 +282,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _uiTimer.Tick += UiTick;
         _uiTimer.Start();
 
+        if (DetectAnomalies) { _anomaly.Start(); _logonMonitor.Start(); }
+        if (UseThreatFeed) _threatFeed.Start();
+
         _pruneTimer = new Timer(_ =>
         {
             _aggregation.Prune(ConnectionInactivityTimeout);
@@ -247,6 +307,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             if (!WhitelistEntries.Contains(entry)) WhitelistEntries.Add(entry);
         }
         LogToFile = s.LogToFile;
+        CollectSites = s.CollectSites;
+        DetectAnomalies = s.Detection.Enabled;
+        UseThreatFeed = s.Detection.ThreatFeed;
         if (Enum.TryParse<LogFormat>(s.LogFormat, out var fmt) && LogFormatOptions.Contains(fmt))
             LogFormat = fmt;
         if (ProtocolOptions.Contains(s.ProtocolFilter)) ProtocolFilter = s.ProtocolFilter;
@@ -461,9 +524,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 {
                     _aggregation.Add(rec);
                     _notifications.Inspect(rec);
+                    _anomaly.Inspect(rec);
                     if (LogToFile)
                     {
-                        try { _logging.Format = LogFormat; _logging.Write(rec); }
+                        try { _logging.Format = LogFormat; _logging.Enqueue(rec); }
                         catch { }
                     }
                 }
@@ -478,14 +542,15 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     private void OnConnectionCreated(object? sender, ConnectionAggregate conn)
     {
-        var cached = _dns.Lookup(conn.RemoteIp);
-        if (cached is not null)
+        if (CollectSites)
         {
-            conn.RemoteHost = cached;
-        }
-        else
-        {
-            _dns.Enqueue(conn.RemoteIp);
+            if (_queriedHosts.TryGetValue(conn.RemoteIp, out var queried)) conn.RemoteHost = queried;
+            else
+            {
+                var cached = _dns.Lookup(conn.RemoteIp);
+                if (cached is not null) conn.RemoteHost = cached;
+                else _dns.Enqueue(conn.RemoteIp);
+            }
         }
 
         var generation = Volatile.Read(ref _clearGeneration);
@@ -507,9 +572,16 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     private void OnRemoteIpCreated(object? sender, RemoteIpAggregate ip)
     {
-        var cached = _dns.Lookup(ip.Ip);
-        if (cached is not null) ip.RemoteHost = cached;
-        else _dns.Enqueue(ip.Ip);
+        if (CollectSites)
+        {
+            if (_queriedHosts.TryGetValue(ip.Ip, out var queried)) ip.RemoteHost = queried;
+            else
+            {
+                var cached = _dns.Lookup(ip.Ip);
+                if (cached is not null) ip.RemoteHost = cached;
+                else _dns.Enqueue(ip.Ip);
+            }
+        }
 
         var generation = Volatile.Read(ref _clearGeneration);
         _dispatcher.BeginInvoke(() =>
@@ -559,8 +631,26 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         });
     }
 
+    private void OnDnsAnswered(string name, IReadOnlyList<string> ips)
+    {
+        if (!CollectSites) return;
+        if (_queriedHosts.Count > 50_000) _queriedHosts.Clear();
+        foreach (var ip in ips) _queriedHosts[ip] = name;
+        _dispatcher.BeginInvoke(() =>
+        {
+            foreach (var ip in ips)
+            {
+                if (_byRemoteIp.TryGetValue(ip, out var list))
+                    foreach (var c in list) c.RemoteHost = name;
+                if (_ipIndex.TryGetValue(ip, out var ipAgg)) ipAgg.RemoteHost = name;
+            }
+        });
+    }
+
     private void OnDnsResolved(object? sender, DnsResolvedEventArgs e)
     {
+        if (!CollectSites) return;
+        if (_queriedHosts.ContainsKey(e.Ip)) return; // запрошенное имя точнее PTR
         _dispatcher.BeginInvoke(() =>
         {
             if (_byRemoteIp.TryGetValue(e.Ip, out var list))
@@ -578,6 +668,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _dispatcher.BeginInvoke(() =>
         {
             _notificationItems.Insert(0, n);
+            if (n.Severity != NotificationSeverity.Info && !_notificationsTabActive) UnreadAlerts++;
             while (_notificationItems.Count > 200) _notificationItems.RemoveAt(_notificationItems.Count - 1);
             try { _logging.WriteNotification(n); } catch { }
         });
@@ -608,7 +699,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         TotalBytesInText = ByteFormatter.Format(_aggregation.TotalBytesIn);
         TotalBytesOutText = ByteFormatter.Format(_aggregation.TotalBytesOut);
         TotalPackets = _aggregation.TotalPackets;
-        DroppedPackets = _captureService.DroppedPackets;
+        DroppedPackets = _captureService.DroppedPackets + _captureService.DriverDroppedPackets;
         ConnectionCount = Connections.Count;
         _aggregation.PublishCounters();
 
@@ -774,6 +865,51 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     }
 
     partial void OnLogToFileChanged(bool value) => SettingsService.Current.LogToFile = value;
+
+    partial void OnUseThreatFeedChanged(bool value)
+    {
+        SettingsService.Current.Detection.ThreatFeed = value;
+        if (value) _threatFeed.Start(); else _threatFeed.Stop();
+        SettingsService.Save();
+    }
+
+    partial void OnDetectAnomaliesChanged(bool value)
+    {
+        SettingsService.Current.Detection.Enabled = value;
+        if (value) { _anomaly.Start(); _logonMonitor.Start(); }
+        else { _anomaly.Stop(); _logonMonitor.Stop(); }
+        SettingsService.Save();
+    }
+
+    partial void OnCollectSitesChanged(bool value)
+    {
+        SettingsService.Current.CollectSites = value;
+        _captureService.ExtractSites = value;
+        Analytics.SitesEnabled = value;
+        if (value)
+        {
+            _dnsMonitor.Start();
+            _captureService.ParseDnsPackets = !_dnsMonitor.EtwActive;
+        }
+        else
+        {
+            _dnsMonitor.Stop();
+            _captureService.ParseDnsPackets = true;
+            _queriedHosts.Clear();
+            ClearSiteInfo();
+        }
+        SettingsService.Save();
+    }
+
+    /// <summary>При выключении сбора стираем уже накопленные домены и имена хостов.</summary>
+    private void ClearSiteInfo()
+    {
+        _dispatcher.BeginInvoke(() =>
+        {
+            foreach (var c in _aggregation.Connections) { c.Sni = string.Empty; c.RemoteHost = string.Empty; }
+            foreach (var ip in _aggregation.RemoteIps) ip.RemoteHost = string.Empty;
+        });
+    }
     partial void OnLogFormatChanged(LogFormat value) => SettingsService.Current.LogFormat = value.ToString();
 
     partial void OnSelectedGroupingChanged(string value)
@@ -805,6 +941,11 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             if (_pruneTimer.Dispose(wh)) wh.WaitOne(1000);
         }
         Stop();
+        _anomaly.Dispose();
+        Analytics.Dispose();
+        _logonMonitor.Dispose();
+        _threatFeed.Dispose();
+        _dnsMonitor.Dispose();
 
         Themes.ThemeManager.ThemeChanged -= _themeChangedHandler;
         _notifications.NotificationRaised -= OnNotificationRaised;
@@ -814,6 +955,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _aggregation.RemoteIpsPruned -= OnRemoteIpsPruned;
         _dns.Resolved -= OnDnsResolved;
 
+        ShareAccess.Alert -= OnNotificationRaised;
+        ShareAccess.Dispose();
         _captureService.Dispose();
         _etwTracker.Dispose();
         _processResolver.Dispose();

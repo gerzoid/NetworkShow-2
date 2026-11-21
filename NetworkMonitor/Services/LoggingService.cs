@@ -5,6 +5,8 @@ using System.IO;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
+using System.Threading.Channels;
+using System.Threading.Tasks;
 using NetworkMonitor.Models;
 
 namespace NetworkMonitor.Services;
@@ -24,6 +26,14 @@ public sealed class LoggingService : IDisposable
     private StreamWriter? _writer;
     private string? _currentPath;
     private bool _csvHeaderWritten;
+
+    // Запись на диск — в фоновом потоке: сериализация и ввод-вывод не тормозят цикл агрегации
+    private readonly Channel<PacketRecord> _queue;
+    private readonly Task _writerTask;
+    private long _droppedRecords;
+
+    /// <summary>Записи, не попавшие в лог из-за переполнения очереди (диск не успевает).</summary>
+    public long DroppedRecords => Interlocked.Read(ref _droppedRecords);
 
     public LogFormat Format
     {
@@ -48,6 +58,36 @@ public sealed class LoggingService : IDisposable
         Directory.CreateDirectory(_logDir);
         _format = format;
         _maxBytes = maxBytes;
+        _queue = Channel.CreateBounded<PacketRecord>(new BoundedChannelOptions(100_000)
+        {
+            FullMode = BoundedChannelFullMode.DropWrite,
+            SingleReader = true,
+            SingleWriter = true
+        }, _ => Interlocked.Increment(ref _droppedRecords));
+        _writerTask = Task.Factory.StartNew(WriterLoop, CancellationToken.None,
+            TaskCreationOptions.LongRunning, TaskScheduler.Default).Unwrap();
+    }
+
+    /// <summary>Ставит запись в очередь на запись (не блокирует вызывающий поток).</summary>
+    public void Enqueue(PacketRecord r) => _queue.Writer.TryWrite(r);
+
+    private async Task WriterLoop()
+    {
+        var reader = _queue.Reader;
+        try
+        {
+            while (await reader.WaitToReadAsync().ConfigureAwait(false))
+            {
+                int n = 0;
+                while (n < 8192 && reader.TryRead(out var rec))
+                {
+                    n++;
+                    try { Write(rec); } catch { }
+                }
+                Flush();
+            }
+        }
+        catch { }
     }
 
     public void Write(PacketRecord r)
@@ -225,6 +265,8 @@ public sealed class LoggingService : IDisposable
 
     public void Dispose()
     {
+        _queue.Writer.TryComplete();
+        try { _writerTask.Wait(TimeSpan.FromSeconds(3)); } catch { }
         lock (_lock) Close();
     }
 }

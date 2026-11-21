@@ -24,6 +24,8 @@ public struct PacketHeaders
     /// <summary>Смещение и длина полезной нагрузки TCP/UDP внутри кадра (0, если её нет).</summary>
     public int PayloadOffset;
     public int PayloadLength;
+    /// <summary>Флаги TCP (байт 13 заголовка): SYN=0x02, ACK=0x10, RST=0x04, FIN=0x01.</summary>
+    public byte TcpFlags;
 
     public readonly bool IsTcp => Protocol == PacketHeaderParser.ProtoTcp;
     public readonly bool IsUdp => Protocol == PacketHeaderParser.ProtoUdp;
@@ -163,6 +165,7 @@ public static class PacketHeaderParser
             if (start + 20 > end) return false;
             h.SourcePort = BinaryPrimitives.ReadUInt16BigEndian(frame[start..]);
             h.DestinationPort = BinaryPrimitives.ReadUInt16BigEndian(frame[(start + 2)..]);
+            h.TcpFlags = frame[start + 13];
             int dataOffset = (frame[start + 12] >> 4) * 4;
             if (dataOffset >= 20 && start + dataOffset <= end)
             {

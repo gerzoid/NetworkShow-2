@@ -39,6 +39,8 @@ public partial class MainWindow : Window
         };
     }
 
+    private void SettingsButton_Click(object sender, RoutedEventArgs e) => SettingsPopup.IsOpen = true;
+
     private void RestoreWindowBounds()
     {
         var s = SettingsService.Current;
@@ -81,8 +83,17 @@ public partial class MainWindow : Window
     {
         if (DataContext is not MainViewModel vm) return;
 
+        void ApplySitesVisibility()
+        {
+            var v = vm.CollectSites ? Visibility.Visible : Visibility.Collapsed;
+            SniColumn.Visibility = v;
+            DnsHostColumn.Visibility = v;
+        }
+        ApplySitesVisibility();
+
         vm.PropertyChanged += (_, args) =>
         {
+            if (args.PropertyName == nameof(MainViewModel.CollectSites)) ApplySitesVisibility();
             if (args.PropertyName == nameof(MainViewModel.SpeedInText) && _trayIcon is not null)
             {
                 var text = $"NetworkShow  ↓ {vm.SpeedInText}  ↑ {vm.SpeedOutText}";

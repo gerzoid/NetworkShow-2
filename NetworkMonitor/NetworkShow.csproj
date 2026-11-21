@@ -9,7 +9,7 @@
     <UseWindowsForms>true</UseWindowsForms>
     <Platforms>AnyCPU;x64</Platforms>
     <RootNamespace>NetworkMonitor</RootNamespace>
-    <AssemblyName>NetworkMonitor</AssemblyName>
+    <AssemblyName>NetworkMonitor</AssemblyName><ApplicationIcon>app.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <LangVersion>latest</LangVersion>
     <!-- WFAC010: WinForms-анализатор предлагает перенести DPI из манифеста в

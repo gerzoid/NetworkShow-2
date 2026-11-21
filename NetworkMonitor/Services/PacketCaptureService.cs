@@ -26,6 +26,7 @@ public sealed class PacketCaptureService : IDisposable
 
     private sealed record IpInfo(string Text, bool IsLocal);
     private const int IpCacheLimit = 65_536;
+    private const int SnapLength = 2048;
     private readonly Dictionary<IpKey, IpInfo> _ipCache = new();
 
     // Имена протоколов (кроме TCP/UDP) как у PacketDotNet, без Enum.ToString() на каждый пакет
@@ -34,19 +35,42 @@ public sealed class PacketCaptureService : IDisposable
 
     public ChannelReader<PacketRecord> Reader => _channel.Reader;
     public bool IsRunning { get; private set; }
+
+    private volatile bool _extractSites;
+    /// <summary>Извлекать SNI (TLS/QUIC). Выключено по умолчанию — домены не читаются, пока пользователь не включит.</summary>
+    public bool ExtractSites { get => _extractSites; set => _extractSites = value; }
+
+    private volatile bool _parseDnsPackets = true;
+    /// <summary>Разбирать DNS-запросы из пакетов (false, пока работает ETW-мониторинг DNS — он точнее и даёт процесс).</summary>
+    public bool ParseDnsPackets { get => _parseDnsPackets; set => _parseDnsPackets = value; }
     public long DroppedPackets => Interlocked.Read(ref _droppedPackets);
+
+    /// <summary>Пакеты, потерянные самим драйвером/буфером Npcap (приложение не успело их забрать).</summary>
+    public long DriverDroppedPackets
+    {
+        get
+        {
+            try
+            {
+                var st = _device?.Statistics;
+                return st is null ? 0 : (long)st.DroppedPackets + st.InterfaceDroppedPackets;
+            }
+            catch { return 0; }
+        }
+    }
 
     public event EventHandler<string>? CaptureError;
 
     public PacketCaptureService(ProcessResolverService processResolver)
     {
         _processResolver = processResolver;
+        // DropOldest: TryWrite при переполнении всегда true, поэтому потери считаем в itemDropped
         _channel = Channel.CreateBounded<PacketRecord>(new BoundedChannelOptions(50_000)
         {
             FullMode = BoundedChannelFullMode.DropOldest,
-            SingleReader = false,
-            SingleWriter = false
-        });
+            SingleReader = true,
+            SingleWriter = true
+        }, _ => Interlocked.Increment(ref _droppedPackets));
     }
 
     public IReadOnlyList<NetworkInterfaceInfo> ListInterfaces()
@@ -93,7 +117,9 @@ public sealed class PacketCaptureService : IDisposable
             {
                 Mode = DeviceModes.Promiscuous,
                 ReadTimeout = 250,
-                BufferSize = 16 * 1024 * 1024
+                BufferSize = 16 * 1024 * 1024,
+                // Заголовки + ClientHello/QUIC Initial умещаются в 2048 байт; остальное копировать не нужно
+                Snaplen = SnapLength
             });
             _linkType = (int)device.LinkType;
             device.StartCapture();
@@ -143,19 +169,22 @@ public sealed class PacketCaptureService : IDisposable
 
             string protocol;
             string? sni = null;
+            string? dnsName = null;
             var payload = h.PayloadLength > 0 ? data.Slice(h.PayloadOffset, h.PayloadLength) : default;
             if (h.IsTcp)
             {
                 protocol = "TCP";
-                if (payload.Length >= 43 && payload[0] == 0x16 && payload[5] == 0x01)
+                if (_extractSites && payload.Length >= 43 && payload[0] == 0x16 && payload[5] == 0x01)
                     sni = TlsSniExtractor.TryExtract(payload);
             }
             else if (h.IsUdp)
             {
                 protocol = "UDP";
+                if (_extractSites && _parseDnsPackets && h.DestinationPort == 53 && payload.Length > 16)
+                    DnsQueryParser.TryParse(payload, out dnsName, out _);
                 // HTTP/3: SNI из QUIC Initial (только исходящие ClientHello на 443,
                 // длинный заголовок типа Initial и датаграмма >= 1200 — дешёвый фильтр до криптографии)
-                if (h.DestinationPort == 443 && payload.Length >= 1200 && (payload[0] & 0xF0) == 0xC0)
+                if (_extractSites && h.DestinationPort == 443 && payload.Length >= 1200 && (payload[0] & 0xF0) == 0xC0)
                     sni = QuicSniExtractor.TryExtract(payload.ToArray());
             }
             else
@@ -168,12 +197,19 @@ public sealed class PacketCaptureService : IDisposable
             var direction = DetermineDirection(src.IsLocal, dst.IsLocal);
 
             Emit(e.Header.Timeval, src.Text, h.SourcePort, dst.Text, h.DestinationPort,
-                protocol, data.Length, direction, sni);
+                protocol, OriginalLength(e), direction, sni, h.TcpFlags, dnsName);
         }
         catch
         {
             Interlocked.Increment(ref _droppedPackets);
         }
+    }
+
+    // При snaplen данные обрезаны — размер для статистики берём из исходной длины кадра
+    private static int OriginalLength(PacketCapture e)
+    {
+        var len = e.Header is PcapHeader ph ? (int)ph.PacketLength : 0;
+        return len > 0 ? len : e.Data.Length;
     }
 
     /// <summary>Разбор через PacketDotNet — для канальных уровней, которые не знает PacketHeaderParser.</summary>
@@ -187,6 +223,7 @@ public sealed class PacketCaptureService : IDisposable
         int srcPort = 0, dstPort = 0;
         string protocol;
         string? sni = null;
+        byte flags = 0;
 
         var tcp = packet.Extract<TcpPacket>();
         var udp = packet.Extract<UdpPacket>();
@@ -195,9 +232,11 @@ public sealed class PacketCaptureService : IDisposable
             srcPort = tcp.SourcePort;
             dstPort = tcp.DestinationPort;
             protocol = "TCP";
+            flags = (byte)((tcp.Synchronize ? 0x02 : 0) | (tcp.Acknowledgment ? 0x10 : 0)
+                           | (tcp.Reset ? 0x04 : 0) | (tcp.Finished ? 0x01 : 0));
 
             var payload = tcp.PayloadData;
-            if (payload is { Length: >= 43 } && payload[0] == 0x16 && payload[5] == 0x01)
+            if (_extractSites && payload is { Length: >= 43 } && payload[0] == 0x16 && payload[5] == 0x01)
                 sni = TlsSniExtractor.TryExtract(payload);
         }
         else if (udp is not null)
@@ -206,7 +245,7 @@ public sealed class PacketCaptureService : IDisposable
             dstPort = udp.DestinationPort;
             protocol = "UDP";
 
-            if (dstPort == 443)
+            if (_extractSites && dstPort == 443)
             {
                 var payload = udp.PayloadData;
                 if (payload is { Length: >= 1200 } && (payload[0] & 0xC0) == 0xC0)
@@ -222,11 +261,11 @@ public sealed class PacketCaptureService : IDisposable
             _localAddresses.Contains(ip.SourceAddress), _localAddresses.Contains(ip.DestinationAddress));
 
         Emit(raw.Timeval, ip.SourceAddress.ToString(), srcPort, ip.DestinationAddress.ToString(), dstPort,
-            protocol, raw.Data.Length, direction, sni);
+            protocol, OriginalLength(e), direction, sni, flags);
     }
 
     private void Emit(PosixTimeval timeval, string srcIp, int srcPort, string dstIp, int dstPort,
-        string protocol, int size, TrafficDirection direction, string? sni)
+        string protocol, int size, TrafficDirection direction, string? sni, byte tcpFlags = 0, string? dnsName = null)
     {
         var (pid, name) = (0, "unknown");
         if (protocol is "TCP" or "UDP")
@@ -244,7 +283,9 @@ public sealed class PacketCaptureService : IDisposable
             Direction = direction,
             ProcessId = pid,
             ProcessName = name,
-            Sni = sni
+            Sni = sni,
+            TcpFlags = tcpFlags,
+            DnsName = dnsName
         };
 
         if (!_channel.Writer.TryWrite(record))

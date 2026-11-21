@@ -42,7 +42,13 @@ public sealed class NotificationService
     private DateTime _lastSpikeNotification = DateTime.MinValue;
     private static readonly TimeSpan BlacklistRepeatInterval = TimeSpan.FromSeconds(30);
 
+    private HashSet<string>? _threatFeed;
+    private readonly ConcurrentDictionary<string, DateTime> _feedLastWarn = new();
+
     public event EventHandler<TrafficNotification>? NotificationRaised;
+
+    /// <summary>Внешний фид угроз (IP C2-серверов); null — выключен.</summary>
+    public void SetThreatFeed(HashSet<string>? ips) => System.Threading.Volatile.Write(ref _threatFeed, ips);
 
     public IEnumerable<string> Whitelist => _whitelist.Keys;
     public IEnumerable<string> Blacklist => _blacklist.Keys;
@@ -119,6 +125,18 @@ public sealed class NotificationService
         var remoteIp = r.Direction == TrafficDirection.Outbound ? r.DestinationIp : r.SourceIp;
         var now = DateTime.UtcNow;
 
+        var feed = System.Threading.Volatile.Read(ref _threatFeed);
+        if (feed is not null && feed.Contains(remoteIp) && !Matches(_whitelist, System.Threading.Volatile.Read(ref _whitelistCidrs), remoteIp))
+        {
+            var lastFeed = _feedLastWarn.GetValueOrDefault(remoteIp, DateTime.MinValue);
+            if (now - lastFeed >= BlacklistRepeatInterval)
+            {
+                _feedLastWarn[remoteIp] = now;
+                Raise(NotificationSeverity.Critical, "IP из фида угроз (ботнет C2)",
+                    $"Соединение с {remoteIp} ({r.ProcessName}) — адрес в списке Feodo Tracker");
+            }
+        }
+
         if (Matches(_blacklist, System.Threading.Volatile.Read(ref _blacklistCidrs), remoteIp))
         {
             var last = _blacklistLastWarn.GetValueOrDefault(remoteIp, DateTime.MinValue);
@@ -168,6 +186,7 @@ public sealed class NotificationService
         PruneDict(_knownIps, cutoff);
         PruneDict(_warnedPorts, cutoff);
         PruneDict(_blacklistLastWarn, cutoff);
+        PruneDict(_feedLastWarn, cutoff);
     }
 
     private static void PruneDict(ConcurrentDictionary<string, DateTime> dict, DateTime cutoff)
@@ -203,6 +222,13 @@ public sealed class NotificationService
         }
     }
 
+    /// <summary>Поднять уведомление из внешнего детектора.</summary>
+    public void RaiseExternal(NotificationSeverity severity, string title, string message) =>
+        Raise(severity, title, message);
+
+    public bool IsWhitelisted(string ip) =>
+        Matches(_whitelist, System.Threading.Volatile.Read(ref _whitelistCidrs), ip);
+
     private void Raise(NotificationSeverity severity, string title, string message)
     {
         NotificationRaised?.Invoke(this, new TrafficNotification
@@ -213,7 +239,7 @@ public sealed class NotificationService
         });
     }
 
-    private static bool IsLocalOrPrivate(string ip)
+    internal static bool IsLocalOrPrivate(string ip)
     {
         if (string.IsNullOrEmpty(ip)) return true;
         if (ip.StartsWith("10.") || ip.StartsWith("192.168.") || ip.StartsWith("127.")) return true;

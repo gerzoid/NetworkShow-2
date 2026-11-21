@@ -5,13 +5,14 @@
         xmlns:conv="clr-namespace:NetworkMonitor.Converters"
         xmlns:lvc="clr-namespace:LiveChartsCore.SkiaSharpView.WPF;assembly=LiveChartsCore.SkiaSharpView.WPF"
         Title="NetworkShow - сетевой мониторинг трафика" Height="820" Width="1400"
-        WindowStartupLocation="CenterScreen">
+        WindowStartupLocation="CenterScreen" MinWidth="1000" MinHeight="600">
     <Window.DataContext>
         <vm:MainViewModel />
     </Window.DataContext>
     <Window.Resources>
         <conv:InverseBoolConverter x:Key="InverseBoolConverter" />
         <conv:BytesConverter x:Key="BytesConverter" />
+        <conv:ShareToggleTextConverter x:Key="ShareToggleText" />
 
         <ContextMenu x:Key="ConnectionRowMenu">
             <MenuItem Header="Копировать" Click="CopyConnection_Click" />
@@ -33,6 +34,34 @@
 
         <Style x:Key="ConnectionRowStyle" TargetType="DataGridRow" BasedOn="{StaticResource {x:Type DataGridRow}}">
             <Setter Property="ContextMenu" Value="{StaticResource ConnectionRowMenu}" />
+            <Setter Property="ToolTip" Value="{Binding Endpoint}" />
+        </Style>
+
+        <Style x:Key="NotificationRowStyle" TargetType="DataGridRow" BasedOn="{StaticResource {x:Type DataGridRow}}">
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding SeverityText}" Value="Critical">
+                    <Setter Property="Foreground" Value="{DynamicResource DangerBrush}" />
+                    <Setter Property="FontWeight" Value="SemiBold" />
+                </DataTrigger>
+                <DataTrigger Binding="{Binding SeverityText}" Value="Warning">
+                    <Setter Property="Foreground" Value="{DynamicResource WarnBrush}" />
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+
+        <Style x:Key="ShareRowStyle" TargetType="DataGridRow" BasedOn="{StaticResource {x:Type DataGridRow}}">
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding Denied}" Value="True">
+                    <Setter Property="Foreground" Value="{DynamicResource DangerBrush}" />
+                </DataTrigger>
+                <MultiDataTrigger>
+                    <MultiDataTrigger.Conditions>
+                        <Condition Binding="{Binding Denied}" Value="False" />
+                        <Condition Binding="{Binding IsTunnel}" Value="True" />
+                    </MultiDataTrigger.Conditions>
+                    <Setter Property="Foreground" Value="{DynamicResource WarnBrush}" />
+                </MultiDataTrigger>
+            </Style.Triggers>
         </Style>
 
         <Style x:Key="RemoteIpRowStyle" TargetType="DataGridRow" BasedOn="{StaticResource {x:Type DataGridRow}}">
@@ -45,7 +74,7 @@
                TextElement.FontFamily="Segoe UI"
                Background="{DynamicResource BgBrush}">
 
-        <!-- Top toolbar -->
+        <!-- Top toolbar: только управление захватом; настройки — во всплывающем окне -->
         <Border DockPanel.Dock="Top" Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource BorderBrush}"
                 BorderThickness="0,0,0,1" Padding="12,8">
             <Grid>
@@ -55,32 +84,98 @@
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
 
-                <TextBlock Grid.Column="0" Text="Network Monitor" FontSize="16" FontWeight="Bold"
-                           Foreground="{DynamicResource ForegroundBrush}" VerticalAlignment="Center" Margin="0,0,16,0" />
-
-                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
-                    <TextBlock Text="Интерфейс:" VerticalAlignment="Center" Margin="0,0,6,0" Foreground="{DynamicResource MutedBrush}" />
-                    <ComboBox Width="320" ItemsSource="{Binding Interfaces}" SelectedItem="{Binding SelectedInterface}" />
-                    <Button Content="⟳" Command="{Binding RefreshInterfacesCommand}" Style="{DynamicResource GhostButton}"
-                            Margin="4,0,0,0" ToolTip="Обновить список интерфейсов (после подключения VPN или адаптера)"
+                <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+                    <TextBlock Text="Интерфейс" VerticalAlignment="Center" Margin="0,0,6,0" Foreground="{DynamicResource MutedBrush}" />
+                    <ComboBox Width="260" ItemsSource="{Binding Interfaces}" SelectedItem="{Binding SelectedInterface}" />
+                    <Button Content="&#xE72C;" FontFamily="Segoe MDL2 Assets" Command="{Binding RefreshInterfacesCommand}"
+                            Style="{DynamicResource GhostButton}" Margin="4,0,0,0"
+                            ToolTip="Обновить список интерфейсов (после подключения VPN или адаптера)"
                             IsEnabled="{Binding IsCapturing, Converter={StaticResource InverseBoolConverter}}" />
-                    <Button Content="Запустить" Command="{Binding StartCommand}" Margin="8,0,4,0"
+                    <Button Content="▶  Запустить" Command="{Binding StartCommand}" Margin="10,0,4,0"
                             IsEnabled="{Binding IsCapturing, Converter={StaticResource InverseBoolConverter}}" />
-                    <Button Content="Стоп" Command="{Binding StopCommand}" Style="{DynamicResource DangerButton}"
+                    <Button Content="■  Стоп" Command="{Binding StopCommand}" Style="{DynamicResource DangerButton}"
                             IsEnabled="{Binding IsCapturing}" />
                     <Button Content="Пауза" Command="{Binding TogglePauseCommand}" Style="{DynamicResource GhostButton}"
                             Margin="4,0,0,0" IsEnabled="{Binding IsCapturing}" />
-                    <Button Content="Очистить" Command="{Binding ClearCommand}" Style="{DynamicResource GhostButton}" Margin="4,0,0,0" />
-                    <Button Content="Экспорт" Command="{Binding ExportCommand}" Style="{DynamicResource GhostButton}" Margin="4,0,0,0" />
+                    <Rectangle Width="1" Margin="12,4" Fill="{DynamicResource BorderBrush}" />
+                    <Button Content="Очистить" Command="{Binding ClearCommand}" Style="{DynamicResource GhostButton}"
+                            ToolTip="Сбросить накопленные соединения и счётчики" />
+                    <Button Content="Экспорт" Command="{Binding ExportCommand}" Style="{DynamicResource GhostButton}" Margin="4,0,0,0"
+                            ToolTip="Сохранить текущие соединения в файл (папка logs)" />
                 </StackPanel>
 
-                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
-                    <TextBlock Text="Лог:" VerticalAlignment="Center" Margin="8,0,4,0" Foreground="{DynamicResource MutedBrush}" />
-                    <CheckBox IsChecked="{Binding LogToFile}" Content="вкл" VerticalAlignment="Center" Margin="0,0,8,0" />
-                    <ComboBox Width="80" ItemsSource="{Binding LogFormatOptions}" SelectedItem="{Binding LogFormat}" />
-                    <Button Content="Тема" Command="{Binding ToggleThemeCommand}" Style="{DynamicResource GhostButton}" Margin="8,0,0,0"
-                            ToolTip="Переключить тему (тёмная / светлая)" />
+                <!-- Состояние и скорость — всегда на виду -->
+                <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,14,0">
+                    <Ellipse Width="9" Height="9" Margin="0,0,6,0" VerticalAlignment="Center">
+                        <Ellipse.Style>
+                            <Style TargetType="Ellipse">
+                                <Setter Property="Fill" Value="{DynamicResource MutedBrush}" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsCapturing}" Value="True">
+                                        <Setter Property="Fill" Value="{DynamicResource SuccessBrush}" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Ellipse.Style>
+                    </Ellipse>
+                    <TextBlock Foreground="{DynamicResource MutedBrush}" VerticalAlignment="Center" Margin="0,0,18,0">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
+                                <Setter Property="Text" Value="Остановлен" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsCapturing}" Value="True">
+                                        <Setter Property="Text" Value="Захват идёт" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+                    <TextBlock Text="↓" Foreground="{DynamicResource SuccessBrush}" FontWeight="Bold" FontSize="15" VerticalAlignment="Center" />
+                    <TextBlock Text="{Binding SpeedInText}" FontWeight="SemiBold" FontSize="14" MinWidth="88" Margin="4,0,14,0" VerticalAlignment="Center"
+                               ToolTip="Входящая скорость" />
+                    <TextBlock Text="↑" Foreground="{DynamicResource AccentBrush}" FontWeight="Bold" FontSize="15" VerticalAlignment="Center" />
+                    <TextBlock Text="{Binding SpeedOutText}" FontWeight="SemiBold" FontSize="14" MinWidth="88" Margin="4,0,0,0" VerticalAlignment="Center"
+                               ToolTip="Исходящая скорость" />
                 </StackPanel>
+
+                <Grid Grid.Column="2" VerticalAlignment="Center">
+                    <Button x:Name="SettingsButton" Content="⚙  Настройки" Style="{DynamicResource GhostButton}" Click="SettingsButton_Click" />
+                    <Popup x:Name="SettingsPopup" PlacementTarget="{Binding ElementName=SettingsButton}" Placement="Bottom"
+                           StaysOpen="False" AllowsTransparency="True" HorizontalOffset="-230">
+                        <Border Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                                CornerRadius="6" Padding="16" Width="340" Margin="6,4,10,12"
+                                TextElement.Foreground="{DynamicResource ForegroundBrush}">
+                            <Border.Effect>
+                                <DropShadowEffect BlurRadius="14" ShadowDepth="2" Opacity="0.45" />
+                            </Border.Effect>
+                            <StackPanel>
+                                <TextBlock Text="Настройки" FontSize="15" FontWeight="Bold" Margin="0,0,0,10" />
+
+                                <CheckBox IsChecked="{Binding DetectAnomalies}" Content="Обнаруживать аномалии" FontWeight="SemiBold" />
+                                <TextBlock Foreground="{DynamicResource MutedBrush}" TextWrapping="Wrap" Margin="22,2,0,10"
+                                           Text="Сканирование портов, подбор пароля, beaconing, всплески исходящего, новые процессы и слушающие порты, входы Windows (RDP/сеть)." />
+
+                                <CheckBox IsChecked="{Binding CollectSites}" Content="Определять сайты (SNI, DNS)" FontWeight="SemiBold" />
+                                <TextBlock Foreground="{DynamicResource MutedBrush}" TextWrapping="Wrap" Margin="22,2,0,10"
+                                           Text="Домены из TLS/QUIC и DNS-запросов. Без этого флажка домены не читаются и не показываются." />
+
+                                <CheckBox IsChecked="{Binding UseThreatFeed}" Content="Фид угроз (abuse.ch)" FontWeight="SemiBold" />
+                                <TextBlock Foreground="{DynamicResource MutedBrush}" TextWrapping="Wrap" Margin="22,2,0,10"
+                                           Text="Раз в 12 ч скачивает список IP ботнет-серверов и предупреждает о соединениях с ними. Делает HTTPS-запрос во внешнюю сеть." />
+
+                                <CheckBox IsChecked="{Binding LogToFile}" Content="Писать трафик в лог-файл" FontWeight="SemiBold" />
+                                <StackPanel Orientation="Horizontal" Margin="22,4,0,0">
+                                    <TextBlock Text="Формат:" Foreground="{DynamicResource MutedBrush}" VerticalAlignment="Center" Margin="0,0,6,0" />
+                                    <ComboBox Width="90" ItemsSource="{Binding LogFormatOptions}" SelectedItem="{Binding LogFormat}" />
+                                </StackPanel>
+
+                                <Separator Margin="0,12" />
+                                <Button Content="Сменить тему (тёмная / светлая)" Command="{Binding ToggleThemeCommand}"
+                                        Style="{DynamicResource GhostButton}" HorizontalAlignment="Left" />
+                            </StackPanel>
+                        </Border>
+                    </Popup>
+                </Grid>
             </Grid>
         </Border>
 
@@ -92,13 +187,18 @@
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
-                <TextBlock Grid.Column="0" Text="{Binding StatusText}" Foreground="{DynamicResource MutedBrush}" />
+                <TextBlock Grid.Column="0" Text="{Binding StatusText}" Foreground="{DynamicResource MutedBrush}" TextTrimming="CharacterEllipsis" />
                 <StackPanel Grid.Column="1" Orientation="Horizontal">
+                    <TextBlock Text="Всего ↓ " Foreground="{DynamicResource MutedBrush}" />
+                    <TextBlock Text="{Binding TotalBytesInText}" Margin="0,0,10,0" />
+                    <TextBlock Text="↑ " Foreground="{DynamicResource MutedBrush}" />
+                    <TextBlock Text="{Binding TotalBytesOutText}" Margin="0,0,16,0" />
                     <TextBlock Text="Соединения: " Foreground="{DynamicResource MutedBrush}" />
                     <TextBlock Text="{Binding ConnectionCount}" Margin="0,0,12,0" />
                     <TextBlock Text="Пакеты: " Foreground="{DynamicResource MutedBrush}" />
                     <TextBlock Text="{Binding TotalPackets}" Margin="0,0,12,0" />
-                    <TextBlock Text="Потеряно: " Foreground="{DynamicResource MutedBrush}" />
+                    <TextBlock Text="Потеряно: " Foreground="{DynamicResource MutedBrush}"
+                               ToolTip="Пакеты, не успевшие обработаться (очередь приложения + буфер драйвера Npcap)" />
                     <TextBlock Text="{Binding DroppedPackets}" />
                 </StackPanel>
             </Grid>
@@ -107,7 +207,7 @@
         <!-- Main content -->
         <Grid Margin="10">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="280" />
+                <ColumnDefinition Width="250" />
                 <ColumnDefinition Width="*" />
             </Grid.ColumnDefinitions>
 
@@ -115,44 +215,7 @@
             <ScrollViewer Grid.Column="0" VerticalScrollBarVisibility="Auto">
                 <StackPanel Margin="0,0,10,0">
 
-                    <GroupBox Header="Статистика">
-                        <StackPanel>
-                            <Grid Margin="0,0,0,6">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*" />
-                                    <ColumnDefinition Width="Auto" />
-                                </Grid.ColumnDefinitions>
-                                <TextBlock Text="Скорость in" Foreground="{DynamicResource MutedBrush}" />
-                                <TextBlock Grid.Column="1" Text="{Binding SpeedInText}" FontWeight="Bold" />
-                            </Grid>
-                            <Grid Margin="0,0,0,6">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*" />
-                                    <ColumnDefinition Width="Auto" />
-                                </Grid.ColumnDefinitions>
-                                <TextBlock Text="Скорость out" Foreground="{DynamicResource MutedBrush}" />
-                                <TextBlock Grid.Column="1" Text="{Binding SpeedOutText}" FontWeight="Bold" />
-                            </Grid>
-                            <Grid Margin="0,0,0,6">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*" />
-                                    <ColumnDefinition Width="Auto" />
-                                </Grid.ColumnDefinitions>
-                                <TextBlock Text="Всего in" Foreground="{DynamicResource MutedBrush}" />
-                                <TextBlock Grid.Column="1" Text="{Binding TotalBytesInText}" />
-                            </Grid>
-                            <Grid>
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*" />
-                                    <ColumnDefinition Width="Auto" />
-                                </Grid.ColumnDefinitions>
-                                <TextBlock Text="Всего out" Foreground="{DynamicResource MutedBrush}" />
-                                <TextBlock Grid.Column="1" Text="{Binding TotalBytesOutText}" />
-                            </Grid>
-                        </StackPanel>
-                    </GroupBox>
-
-                    <GroupBox Header="Фильтры">
+                    <GroupBox Header="Фильтры (Соединения / IP-адреса)">
                         <StackPanel>
                             <TextBlock Text="Поиск" Foreground="{DynamicResource MutedBrush}" Margin="0,0,0,2" />
                             <TextBox Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged, Delay=200}" Margin="0,0,0,8" />
@@ -174,11 +237,21 @@
                             <TextBlock Text="Процесс" Foreground="{DynamicResource MutedBrush}" Margin="0,0,0,2" />
                             <TextBox Text="{Binding ProcessFilter, UpdateSourceTrigger=PropertyChanged, Delay=200}" Margin="0,0,0,8" />
 
-                            <TextBlock Text="Протокол" Foreground="{DynamicResource MutedBrush}" Margin="0,0,0,2" />
-                            <ComboBox ItemsSource="{Binding ProtocolOptions}" SelectedItem="{Binding ProtocolFilter}" Margin="0,0,0,8" />
-
-                            <TextBlock Text="Зона" Foreground="{DynamicResource MutedBrush}" Margin="0,0,0,2" />
-                            <ComboBox ItemsSource="{Binding ScopeOptions}" SelectedItem="{Binding ScopeFilter}" Margin="0,0,0,8" />
+                            <Grid Margin="0,0,0,8">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="6" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Grid.Column="0">
+                                    <TextBlock Text="Протокол" Foreground="{DynamicResource MutedBrush}" Margin="0,0,0,2" />
+                                    <ComboBox ItemsSource="{Binding ProtocolOptions}" SelectedItem="{Binding ProtocolFilter}" />
+                                </StackPanel>
+                                <StackPanel Grid.Column="2">
+                                    <TextBlock Text="Зона" Foreground="{DynamicResource MutedBrush}" Margin="0,0,0,2" />
+                                    <ComboBox ItemsSource="{Binding ScopeOptions}" SelectedItem="{Binding ScopeFilter}" />
+                                </StackPanel>
+                            </Grid>
 
                             <CheckBox IsChecked="{Binding HideUnknownProcess}" Content="Скрыть unknown" Margin="0,0,0,8" />
 
@@ -191,74 +264,6 @@
                                 <Button Content="БС" Command="{Binding AddWhitelistCommand}" Style="{DynamicResource GhostButton}"
                                         ToolTip="Добавить IP из поля 'IP содержит' в белый список" />
                             </StackPanel>
-                        </StackPanel>
-                    </GroupBox>
-
-                    <GroupBox Header="Чёрный список">
-                        <StackPanel>
-                            <TextBlock Text="пусто" Foreground="{DynamicResource MutedBrush}" FontStyle="Italic">
-                                <TextBlock.Style>
-                                    <Style TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
-                                        <Setter Property="Visibility" Value="Collapsed" />
-                                        <Style.Triggers>
-                                            <DataTrigger Binding="{Binding BlacklistEntries.Count}" Value="0">
-                                                <Setter Property="Visibility" Value="Visible" />
-                                            </DataTrigger>
-                                        </Style.Triggers>
-                                    </Style>
-                                </TextBlock.Style>
-                            </TextBlock>
-                            <ItemsControl ItemsSource="{Binding BlacklistEntries}">
-                                <ItemsControl.ItemTemplate>
-                                    <DataTemplate>
-                                        <Grid Margin="0,1">
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="Auto" />
-                                            </Grid.ColumnDefinitions>
-                                            <TextBlock Text="{Binding}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
-                                            <Button Grid.Column="1" Content="✕" Padding="4,0" Margin="4,0,0,0"
-                                                    Style="{DynamicResource GhostButton}" ToolTip="Удалить из чёрного списка"
-                                                    Command="{Binding DataContext.RemoveBlacklistEntryCommand, RelativeSource={RelativeSource AncestorType=Window}}"
-                                                    CommandParameter="{Binding}" />
-                                        </Grid>
-                                    </DataTemplate>
-                                </ItemsControl.ItemTemplate>
-                            </ItemsControl>
-                        </StackPanel>
-                    </GroupBox>
-
-                    <GroupBox Header="Белый список">
-                        <StackPanel>
-                            <TextBlock Text="пусто" Foreground="{DynamicResource MutedBrush}" FontStyle="Italic">
-                                <TextBlock.Style>
-                                    <Style TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
-                                        <Setter Property="Visibility" Value="Collapsed" />
-                                        <Style.Triggers>
-                                            <DataTrigger Binding="{Binding WhitelistEntries.Count}" Value="0">
-                                                <Setter Property="Visibility" Value="Visible" />
-                                            </DataTrigger>
-                                        </Style.Triggers>
-                                    </Style>
-                                </TextBlock.Style>
-                            </TextBlock>
-                            <ItemsControl ItemsSource="{Binding WhitelistEntries}">
-                                <ItemsControl.ItemTemplate>
-                                    <DataTemplate>
-                                        <Grid Margin="0,1">
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="Auto" />
-                                            </Grid.ColumnDefinitions>
-                                            <TextBlock Text="{Binding}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
-                                            <Button Grid.Column="1" Content="✕" Padding="4,0" Margin="4,0,0,0"
-                                                    Style="{DynamicResource GhostButton}" ToolTip="Удалить из белого списка"
-                                                    Command="{Binding DataContext.RemoveWhitelistEntryCommand, RelativeSource={RelativeSource AncestorType=Window}}"
-                                                    CommandParameter="{Binding}" />
-                                        </Grid>
-                                    </DataTemplate>
-                                </ItemsControl.ItemTemplate>
-                            </ItemsControl>
                         </StackPanel>
                     </GroupBox>
 
@@ -304,6 +309,7 @@
                 <TabItem Header="Соединения">
                     <!-- IsVirtualizingWhenGrouping: группировка иначе отключает виртуализацию,
                          и выбор «По процессу» на тысячах строк замораживает UI -->
+                    <Grid>
                     <DataGrid ItemsSource="{Binding ConnectionsView}" RowStyle="{StaticResource ConnectionRowStyle}"
                               IsReadOnly="True"
                               EnableRowVirtualization="True"
@@ -315,9 +321,8 @@
                             <DataGridTextColumn Header="Proto" Binding="{Binding Protocol}" Width="60" />
                             <DataGridTextColumn Header="Сервис" Binding="{Binding Service}" Width="90" />
                             <DataGridTextColumn Header="Приложение" Binding="{Binding AppLabel}" Width="120" />
-                            <DataGridTextColumn Header="Локальный" Binding="{Binding LocalEndpoint}" Width="170" />
-                            <DataGridTextColumn Header="Удалённый" Binding="{Binding RemoteEndpoint}" Width="180" />
-                            <DataGridTextColumn Header="SNI / Хост" Binding="{Binding SniOrHost}" Width="*" />
+                            <DataGridTextColumn Header="Удалённый" Binding="{Binding RemoteEndpoint}" Width="170" />
+                            <DataGridTextColumn x:Name="SniColumn" Header="SNI / Хост" Binding="{Binding SniOrHost}" Width="*" />
                             <DataGridTextColumn Header="Пакеты" Binding="{Binding Packets}" Width="80" />
                             <DataGridTextColumn Header="↓" Binding="{Binding BytesIn, Converter={StaticResource BytesConverter}}" Width="90" />
                             <DataGridTextColumn Header="↑" Binding="{Binding BytesOut, Converter={StaticResource BytesConverter}}" Width="90" />
@@ -325,13 +330,32 @@
                             <DataGridTextColumn Header="Последний" Binding="{Binding LastSeen, StringFormat=HH:mm:ss}" Width="100" />
                         </DataGrid.Columns>
                     </DataGrid>
+                    <TextBlock Text="Захват не запущен. Выберите сетевой интерфейс сверху и нажмите «Запустить»."
+                               HorizontalAlignment="Center" VerticalAlignment="Center" TextWrapping="Wrap" MaxWidth="420"
+                               TextAlignment="Center" FontSize="14" IsHitTestVisible="False" Foreground="{DynamicResource MutedBrush}">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
+                                <Setter Property="Visibility" Value="Collapsed" />
+                                <Style.Triggers>
+                                    <MultiDataTrigger>
+                                        <MultiDataTrigger.Conditions>
+                                            <Condition Binding="{Binding IsCapturing}" Value="False" />
+                                            <Condition Binding="{Binding ConnectionCount}" Value="0" />
+                                        </MultiDataTrigger.Conditions>
+                                        <Setter Property="Visibility" Value="Visible" />
+                                    </MultiDataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+                    </Grid>
                 </TabItem>
 
                 <TabItem Header="IP-адреса">
                     <DataGrid ItemsSource="{Binding RemoteIpsView}" RowStyle="{StaticResource RemoteIpRowStyle}" IsReadOnly="True">
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="IP" Binding="{Binding Ip}" Width="140" />
-                            <DataGridTextColumn Header="Хост (DNS)" Binding="{Binding RemoteHost}" Width="220" />
+                            <DataGridTextColumn x:Name="DnsHostColumn" Header="Хост (DNS)" Binding="{Binding RemoteHost}" Width="220" />
                             <DataGridTextColumn Header="Зона" Binding="{Binding ScopeText}" Width="90" />
                             <DataGridTextColumn Header="Соединений" Binding="{Binding Connections}" Width="100" />
                             <DataGridTextColumn Header="Пакеты" Binding="{Binding Packets}" Width="80" />
@@ -346,6 +370,148 @@
                     </DataGrid>
                 </TabItem>
 
+                <TabItem Header="Аналитика" IsSelected="{Binding Analytics.IsActive, Mode=TwoWay}">
+                    <Grid DataContext="{Binding Analytics}" Margin="6">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                            <RowDefinition Height="6" />
+                            <RowDefinition Height="230" />
+                        </Grid.RowDefinitions>
+
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+                            <TextBlock Text="Период:" VerticalAlignment="Center" Margin="0,0,6,0" Foreground="{DynamicResource MutedBrush}" />
+                            <ComboBox Width="110" ItemsSource="{Binding PeriodOptions}" SelectedItem="{Binding SelectedPeriod}" />
+                            <Button Content="Обновить" Command="{Binding RefreshCommand}" Style="{DynamicResource GhostButton}" Margin="8,0,0,0" />
+                            <Button Content="Экспорт CSV" Command="{Binding ExportCommand}" Style="{DynamicResource GhostButton}" Margin="4,0,0,0" />
+                            <TextBlock Text="{Binding Summary}" VerticalAlignment="Center" Margin="12,0,0,0" Foreground="{DynamicResource MutedBrush}" />
+                        </StackPanel>
+
+                        <TabControl Grid.Row="1" SelectedIndex="{Binding SelectedTabIndex, Mode=TwoWay}">
+                            <TabItem Header="Протоколы">
+                                <DataGrid ItemsSource="{Binding Protocols}" SelectedItem="{Binding SelectedProtocol, Mode=TwoWay}"
+                                          IsReadOnly="True" AutoGenerateColumns="False">
+                                    <DataGrid.Columns>
+                                        <DataGridTextColumn Header="Протокол / сервис" Binding="{Binding Name}" Width="*" />
+                                        <DataGridTextColumn Header="Соед." Binding="{Binding Connections}" Width="70" />
+                                        <DataGridTextColumn Header="Хостов" Binding="{Binding Hosts}" Width="70" />
+                                        <DataGridTextColumn Header="Пакеты" Binding="{Binding Packets}" Width="90" />
+                                        <DataGridTextColumn Header="↓" Binding="{Binding BytesIn, Converter={StaticResource BytesConverter}}" Width="95" />
+                                        <DataGridTextColumn Header="↑" Binding="{Binding BytesOut, Converter={StaticResource BytesConverter}}" Width="95" />
+                                        <DataGridTextColumn Header="Всего" Binding="{Binding Bytes, Converter={StaticResource BytesConverter}}" Width="100" />
+                                        <DataGridTextColumn Header="Доля" Binding="{Binding ShareText}" Width="70" />
+                                        <DataGridTextColumn Header="Последний" Binding="{Binding LastSeen, StringFormat=HH:mm:ss}" Width="90" />
+                                    </DataGrid.Columns>
+                                </DataGrid>
+                            </TabItem>
+
+                            <TabItem Header="Сайты">
+                                <Grid>
+                                    <DataGrid ItemsSource="{Binding Sites}" SelectedItem="{Binding SelectedSite, Mode=TwoWay}"
+                                              IsReadOnly="True" AutoGenerateColumns="False">
+                                        <DataGrid.Columns>
+                                            <DataGridTextColumn Header="Домен" Binding="{Binding Name}" Width="*" />
+                                            <DataGridTextColumn Header="Процессы" Binding="{Binding Extra}" Width="200" />
+                                            <DataGridTextColumn Header="Соед." Binding="{Binding Connections}" Width="70" />
+                                            <DataGridTextColumn Header="Хостов" Binding="{Binding Hosts}" Width="70" />
+                                            <DataGridTextColumn Header="↓" Binding="{Binding BytesIn, Converter={StaticResource BytesConverter}}" Width="95" />
+                                            <DataGridTextColumn Header="↑" Binding="{Binding BytesOut, Converter={StaticResource BytesConverter}}" Width="95" />
+                                            <DataGridTextColumn Header="Всего" Binding="{Binding Bytes, Converter={StaticResource BytesConverter}}" Width="100" />
+                                            <DataGridTextColumn Header="Доля" Binding="{Binding ShareText}" Width="70" />
+                                            <DataGridTextColumn Header="Первый" Binding="{Binding FirstSeen, StringFormat=HH:mm:ss}" Width="80" />
+                                            <DataGridTextColumn Header="Последний" Binding="{Binding LastSeen, StringFormat=HH:mm:ss}" Width="90" />
+                                        </DataGrid.Columns>
+                                    </DataGrid>
+                                    <TextBlock Text="Сбор сайтов выключен. Включите флажок «Сайты» в верхней панели — домены и сводка появятся здесь."
+                                               HorizontalAlignment="Center" VerticalAlignment="Center" TextWrapping="Wrap" IsHitTestVisible="False"
+                                               Foreground="{DynamicResource MutedBrush}">
+                                        <TextBlock.Style>
+                                            <Style TargetType="TextBlock">
+                                                <Setter Property="Visibility" Value="Visible" />
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding SitesEnabled}" Value="True">
+                                                        <Setter Property="Visibility" Value="Collapsed" />
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </TextBlock.Style>
+                                    </TextBlock>
+                                </Grid>
+                            </TabItem>
+
+                            <TabItem Header="Процессы">
+                                <DataGrid ItemsSource="{Binding Processes}" SelectedItem="{Binding SelectedProcess, Mode=TwoWay}"
+                                          IsReadOnly="True" AutoGenerateColumns="False">
+                                    <DataGrid.Columns>
+                                        <DataGridTextColumn Header="Процесс" Binding="{Binding Name}" Width="*" />
+                                        <DataGridTextColumn Header="Протоколы" Binding="{Binding Extra}" Width="100" />
+                                        <DataGridTextColumn Header="Соед." Binding="{Binding Connections}" Width="70" />
+                                        <DataGridTextColumn Header="Хостов" Binding="{Binding Hosts}" Width="70" />
+                                        <DataGridTextColumn Header="Пакеты" Binding="{Binding Packets}" Width="90" />
+                                        <DataGridTextColumn Header="↓" Binding="{Binding BytesIn, Converter={StaticResource BytesConverter}}" Width="95" />
+                                        <DataGridTextColumn Header="↑" Binding="{Binding BytesOut, Converter={StaticResource BytesConverter}}" Width="95" />
+                                        <DataGridTextColumn Header="Всего" Binding="{Binding Bytes, Converter={StaticResource BytesConverter}}" Width="100" />
+                                        <DataGridTextColumn Header="Доля" Binding="{Binding ShareText}" Width="70" />
+                                        <DataGridTextColumn Header="Последний" Binding="{Binding LastSeen, StringFormat=HH:mm:ss}" Width="90" />
+                                    </DataGrid.Columns>
+                                </DataGrid>
+                            </TabItem>
+                            <TabItem Header="Зоны">
+                                <DataGrid ItemsSource="{Binding Zones}" SelectedItem="{Binding SelectedZone, Mode=TwoWay}"
+                                          IsReadOnly="True" AutoGenerateColumns="False">
+                                    <DataGrid.Columns>
+                                        <DataGridTextColumn Header="Зона" Binding="{Binding Name}" Width="*" />
+                                        <DataGridTextColumn Header="Основные процессы" Binding="{Binding Extra}" Width="240" />
+                                        <DataGridTextColumn Header="Соед." Binding="{Binding Connections}" Width="70" />
+                                        <DataGridTextColumn Header="Хостов" Binding="{Binding Hosts}" Width="70" />
+                                        <DataGridTextColumn Header="Пакеты" Binding="{Binding Packets}" Width="90" />
+                                        <DataGridTextColumn Header="↓" Binding="{Binding BytesIn, Converter={StaticResource BytesConverter}}" Width="95" />
+                                        <DataGridTextColumn Header="↑" Binding="{Binding BytesOut, Converter={StaticResource BytesConverter}}" Width="95" />
+                                        <DataGridTextColumn Header="Всего" Binding="{Binding Bytes, Converter={StaticResource BytesConverter}}" Width="100" />
+                                        <DataGridTextColumn Header="Доля" Binding="{Binding ShareText}" Width="70" />
+                                        <DataGridTextColumn Header="Последний" Binding="{Binding LastSeen, StringFormat=HH:mm:ss}" Width="90" />
+                                    </DataGrid.Columns>
+                                </DataGrid>
+                            </TabItem>
+                            <TabItem Header="Служебный трафик">
+                                <DataGrid ItemsSource="{Binding Categories}" SelectedItem="{Binding SelectedCategory, Mode=TwoWay}"
+                                          IsReadOnly="True" AutoGenerateColumns="False">
+                                    <DataGrid.Columns>
+                                        <DataGridTextColumn Header="Категория" Binding="{Binding Name}" Width="*" />
+                                        <DataGridTextColumn Header="Основные процессы" Binding="{Binding Extra}" Width="240" />
+                                        <DataGridTextColumn Header="Соед." Binding="{Binding Connections}" Width="70" />
+                                        <DataGridTextColumn Header="Хостов" Binding="{Binding Hosts}" Width="70" />
+                                        <DataGridTextColumn Header="Пакеты" Binding="{Binding Packets}" Width="90" />
+                                        <DataGridTextColumn Header="↓" Binding="{Binding BytesIn, Converter={StaticResource BytesConverter}}" Width="95" />
+                                        <DataGridTextColumn Header="↑" Binding="{Binding BytesOut, Converter={StaticResource BytesConverter}}" Width="95" />
+                                        <DataGridTextColumn Header="Всего" Binding="{Binding Bytes, Converter={StaticResource BytesConverter}}" Width="100" />
+                                        <DataGridTextColumn Header="Доля" Binding="{Binding ShareText}" Width="70" />
+                                        <DataGridTextColumn Header="Последний" Binding="{Binding LastSeen, StringFormat=HH:mm:ss}" Width="90" />
+                                    </DataGrid.Columns>
+                                </DataGrid>
+                            </TabItem>
+                        </TabControl>
+
+                        <GridSplitter Grid.Row="2" Height="6" HorizontalAlignment="Stretch" Background="{DynamicResource BorderBrush}" />
+
+                        <DockPanel Grid.Row="3">
+                            <TextBlock DockPanel.Dock="Top" Text="{Binding DetailTitle}" FontWeight="SemiBold" Margin="0,0,0,4" />
+                            <DataGrid ItemsSource="{Binding Details}" IsReadOnly="True" AutoGenerateColumns="False">
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Header="Процесс" Binding="{Binding ProcessName}" Width="140" />
+                                    <DataGridTextColumn Header="Proto" Binding="{Binding Protocol}" Width="60" />
+                                    <DataGridTextColumn Header="Удалённый" Binding="{Binding RemoteEndpoint}" Width="190" />
+                                    <DataGridTextColumn Header="SNI / Хост" Binding="{Binding SniOrHost}" Width="*" />
+                                    <DataGridTextColumn Header="↓" Binding="{Binding BytesIn, Converter={StaticResource BytesConverter}}" Width="90" />
+                                    <DataGridTextColumn Header="↑" Binding="{Binding BytesOut, Converter={StaticResource BytesConverter}}" Width="90" />
+                                    <DataGridTextColumn Header="Всего" Binding="{Binding Bytes, Converter={StaticResource BytesConverter}}" Width="100" />
+                                    <DataGridTextColumn Header="Последний" Binding="{Binding LastSeen, StringFormat=HH:mm:ss}" Width="90" />
+                                </DataGrid.Columns>
+                            </DataGrid>
+                        </DockPanel>
+                    </Grid>
+                </TabItem>
+
                 <TabItem Header="Скорость">
                     <Border Style="{DynamicResource Card}">
                         <lvc:CartesianChart Series="{Binding SpeedSeries}"
@@ -356,8 +522,30 @@
                     </Border>
                 </TabItem>
 
-                <TabItem Header="Уведомления">
-                    <DataGrid ItemsSource="{Binding Notifications}" IsReadOnly="True">
+                <TabItem IsSelected="{Binding NotificationsTabActive, Mode=TwoWay}">
+                    <TabItem.Header>
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="Уведомления" />
+                            <Border CornerRadius="8" Padding="6,0" Margin="6,0,0,0" Background="{DynamicResource DangerBrush}" VerticalAlignment="Center">
+                                <Border.Style>
+                                    <Style TargetType="Border">
+                                        <Setter Property="Visibility" Value="Visible" />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding UnreadAlerts}" Value="0">
+                                                <Setter Property="Visibility" Value="Collapsed" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </Border.Style>
+                                <TextBlock Text="{Binding UnreadAlerts}" FontSize="11" FontWeight="Bold" Foreground="White" />
+                            </Border>
+                        </StackPanel>
+                    </TabItem.Header>
+                    <DockPanel>
+                        <CheckBox DockPanel.Dock="Top" IsChecked="{Binding OnlyImportantAlerts}" Margin="4,2,0,8"
+                                  Content="Только важные (предупреждения и критичные)"
+                                  ToolTip="Информационные события вроде «новый внешний IP» скрыты, но пишутся в notifications.log" />
+                    <DataGrid ItemsSource="{Binding NotificationsView}" IsReadOnly="True" RowStyle="{StaticResource NotificationRowStyle}">
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="Время" Binding="{Binding TimeText}" Width="90" />
                             <DataGridTextColumn Header="Уровень" Binding="{Binding SeverityText}" Width="100" />
@@ -365,6 +553,144 @@
                             <DataGridTextColumn Header="Сообщение" Binding="{Binding Message}" Width="*" />
                         </DataGrid.Columns>
                     </DataGrid>
+                    </DockPanel>
+                </TabItem>
+
+                <TabItem Header="Доступ к шарам">
+                    <Grid DataContext="{Binding ShareAccess}">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
+                        <WrapPanel Margin="0,0,0,6">
+                            <Button Content="{Binding IsRunning, Converter={StaticResource ShareToggleText}}"
+                                    Command="{Binding ToggleCommand}" Margin="0,0,6,0" Padding="12,4" />
+                            <Button Content="Включить аудит" Command="{Binding EnableAuditCommand}"
+                                    Style="{DynamicResource GhostButton}" Margin="0,0,6,0" />
+                            <Button Content="Очистить" Command="{Binding ClearCommand}"
+                                    Style="{DynamicResource GhostButton}" Margin="0,0,6,0" />
+                            <Button Content="Открыть лог" Command="{Binding OpenLogCommand}"
+                                    Style="{DynamicResource GhostButton}" Margin="0,0,12,0" />
+                            <TextBox Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}" Width="200" Margin="0,0,10,0"
+                                     ToolTip="Поиск по IP, пользователю, шаре, пути, процессу" />
+                            <CheckBox IsChecked="{Binding OnlyDenied}" Content="Только отказы" VerticalAlignment="Center" Margin="0,0,10,0" />
+                            <CheckBox IsChecked="{Binding OnlyTunnel}" Content="Только через туннель" VerticalAlignment="Center" Margin="0,0,10,0" />
+                            <CheckBox IsChecked="{Binding HideSessions}" Content="Скрыть подключения" VerticalAlignment="Center" />
+                        </WrapPanel>
+                        <StackPanel Grid.Row="1" Margin="0,0,0,6">
+                            <TextBlock Text="{Binding AuditText}" TextWrapping="Wrap" Foreground="{DynamicResource MutedBrush}" />
+                            <TextBlock Foreground="{DynamicResource MutedBrush}" TextWrapping="Wrap">
+                                <Run Text="{Binding StatusText, Mode=OneWay}" />
+                                <Run Text=" | событий: " /><Run Text="{Binding TotalEvents, Mode=OneWay}" />
+                                <Run Text=", отказов: " /><Run Text="{Binding DeniedEvents, Mode=OneWay}" />
+                                <Run Text=", клиентов: " /><Run Text="{Binding ClientCount, Mode=OneWay}" />
+                                <Run Text=" | красный — отказ, жёлтый — через туннель (ssh и т.п.)" />
+                            </TextBlock>
+                        </StackPanel>
+                        <DataGrid Grid.Row="2" ItemsSource="{Binding EventsView}" RowStyle="{StaticResource ShareRowStyle}" IsReadOnly="True">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="Время" Binding="{Binding TimeText}" Width="75" />
+                                <DataGridTextColumn Header="Событие" Binding="{Binding KindText}" Width="110" />
+                                <DataGridTextColumn Header="Результат" Binding="{Binding ResultText}" Width="75" />
+                                <DataGridTextColumn Header="Клиент" Binding="{Binding ClientText}" Width="150" />
+                                <DataGridTextColumn Header="Через (туннель)" Binding="{Binding Via}" Width="160" />
+                                <DataGridTextColumn Header="Пользователь" Binding="{Binding User}" Width="150" />
+                                <DataGridTextColumn Header="Шара" Binding="{Binding Share}" Width="90" />
+                                <DataGridTextColumn Header="Файл / путь" Binding="{Binding Path}" Width="*" />
+                                <DataGridTextColumn Header="Доступ" Binding="{Binding Access}" Width="130" />
+                                <DataGridTextColumn Header="Источник" Binding="{Binding Source}" Width="80" />
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </Grid>
+                </TabItem>
+
+                <TabItem Header="Списки IP">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                        <Grid Margin="6">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="12" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.ColumnSpan="3" TextWrapping="Wrap" Margin="0,0,0,10" Foreground="{DynamicResource MutedBrush}"
+                                       Text="Чёрный список — тревога при любом соединении. Белый — адреса, которые детекторы не считают подозрительными. Добавить: введите IP или CIDR в поле «IP содержит» слева и нажмите «ЧС» / «БС», либо правый клик по строке в таблицах." />
+                            <StackPanel Grid.Row="1" Grid.Column="0">
+                    <GroupBox Header="Чёрный список">
+                        <StackPanel>
+                            <TextBlock Text="пусто" Foreground="{DynamicResource MutedBrush}" FontStyle="Italic">
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
+                                        <Setter Property="Visibility" Value="Collapsed" />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding BlacklistEntries.Count}" Value="0">
+                                                <Setter Property="Visibility" Value="Visible" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
+                            <ItemsControl ItemsSource="{Binding BlacklistEntries}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Grid Margin="0,1">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Text="{Binding}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                                            <Button Grid.Column="1" Content="✕" Padding="4,0" Margin="4,0,0,0"
+                                                    Style="{DynamicResource GhostButton}" ToolTip="Удалить из чёрного списка"
+                                                    Command="{Binding DataContext.RemoveBlacklistEntryCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                    CommandParameter="{Binding}" />
+                                        </Grid>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </StackPanel>
+                    </GroupBox>
+                            </StackPanel>
+                            <StackPanel Grid.Row="1" Grid.Column="2">
+                    <GroupBox Header="Белый список">
+                        <StackPanel>
+                            <TextBlock Text="пусто" Foreground="{DynamicResource MutedBrush}" FontStyle="Italic">
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
+                                        <Setter Property="Visibility" Value="Collapsed" />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding WhitelistEntries.Count}" Value="0">
+                                                <Setter Property="Visibility" Value="Visible" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
+                            <ItemsControl ItemsSource="{Binding WhitelistEntries}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Grid Margin="0,1">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Text="{Binding}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                                            <Button Grid.Column="1" Content="✕" Padding="4,0" Margin="4,0,0,0"
+                                                    Style="{DynamicResource GhostButton}" ToolTip="Удалить из белого списка"
+                                                    Command="{Binding DataContext.RemoveWhitelistEntryCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                    CommandParameter="{Binding}" />
+                                        </Grid>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </StackPanel>
+                    </GroupBox>
+                            </StackPanel>
+                        </Grid>
+                    </ScrollViewer>
                 </TabItem>
             </TabControl>
         </Grid>

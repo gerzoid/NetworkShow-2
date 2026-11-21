@@ -10,6 +10,10 @@ public enum IpScope
     Private,
     LinkLocal,
     Multicast,
+    /// <summary>Ограниченный broadcast 255.255.255.255 (направленный x.x.x.255 без маски не определить).</summary>
+    Broadcast,
+    /// <summary>100.64.0.0/10 — адреса оператора за CGNAT (общая сеть провайдера).</summary>
+    CarrierNat,
     Public
 }
 
@@ -42,8 +46,9 @@ public static class IpClassifier
         if (b[0] == 192 && b[1] == 168) return IpScope.Private;
         if (b[0] == 169 && b[1] == 254) return IpScope.LinkLocal;
         if (b[0] >= 224 && b[0] <= 239) return IpScope.Multicast;
-        if (b[0] == 255 && b[1] == 255 && b[2] == 255 && b[3] == 255) return IpScope.Multicast;
+        if (b[0] == 255 && b[1] == 255 && b[2] == 255 && b[3] == 255) return IpScope.Broadcast;
         if (b[0] == 0 && b[1] == 0 && b[2] == 0 && b[3] == 0) return IpScope.Unknown;
+        if (b[0] == 100 && b[1] >= 64 && b[1] <= 127) return IpScope.CarrierNat;
         return IpScope.Public;
     }
 
@@ -70,6 +75,8 @@ public static class IpClassifier
         IpScope.Private => "LAN",
         IpScope.LinkLocal => "Link-local",
         IpScope.Multicast => "Multicast",
+        IpScope.Broadcast => "Broadcast",
+        IpScope.CarrierNat => "CGNAT (провайдер)",
         IpScope.Public => "Internet",
         _ => "?"
     };
