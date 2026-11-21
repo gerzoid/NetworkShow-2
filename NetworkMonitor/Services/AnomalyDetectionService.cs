@@ -33,7 +33,7 @@ public sealed class AnomalyDetectionService : IDisposable
     {
         21, 22, 23, 135, 139, 445, 1433, 3306, 3389, 5432, 5900, 5985, 5986
     };
-    private static readonly HashSet<int> AuthPorts = new() { 21, 22, 23, 445, 3389, 5900, 5985, 5986 };
+    private static readonly HashSet<int> AuthPorts = new() { 21, 22, 23, 139, 445, 3389, 5900, 5985, 5986 };
     private static readonly HashSet<string> Lolbins = new(StringComparer.OrdinalIgnoreCase)
     {
         "powershell", "pwsh", "cmd", "mshta", "wscript", "cscript", "rundll32", "regsvr32",
@@ -70,6 +70,9 @@ public sealed class AnomalyDetectionService : IDisposable
     public AnomalyDetectionService(NotificationService notify) => _notify = notify;
 
     /// <summary>Источник времени в мс (подменяется в тестах).</summary>
+    /// <summary>Доверие и описание устройства локальной сети по IP (подключается из LAN-монитора).</summary>
+    public Func<string, (bool? Trusted, string Label)>? LanLookup { get; set; }
+
     public Func<long> Clock { get; set; } = () => Environment.TickCount64;
 
     private static DetectionSettings S => SettingsService.Current.Detection;
@@ -124,6 +127,7 @@ public sealed class AnomalyDetectionService : IDisposable
         if (r.Direction == TrafficDirection.Inbound)
         {
             if (syn) lock (_gate) InboundSyn(r, now);
+            else if (r.Protocol == "UDP" && r.DestinationPort is 137 or 138) lock (_gate) InboundNetbiosUdp(r, now);
         }
         else if (r.Direction == TrafficDirection.Outbound)
         {
@@ -178,8 +182,10 @@ public sealed class AnomalyDetectionService : IDisposable
             }
         }
 
-        // DNS-туннель: много разных поддоменов одного домена или очень длинные имена
-        if (sub.Length > 0)
+        // DNS-туннель: много разных поддоменов одного домена или очень длинные имена.
+        // Обратные зоны (PTR-запросы по IP) — обычное поведение самого приложения и резолверов, не туннель.
+        bool reverseZone = baseDomain == "in-addr.arpa" || baseDomain == "ip6.arpa";
+        if (sub.Length > 0 && !reverseZone)
         {
             if (!_tunnels.TryGetValue(baseDomain, out var t))
             {
@@ -198,6 +204,34 @@ public sealed class AnomalyDetectionService : IDisposable
                     (longName ? ", есть очень длинные имена" : string.Empty));
             }
         }
+    }
+
+    /// <summary>NetBIOS по UDP (137/138) из внешней сети: в интернет он не должен выходить — признак сканирования или неверной настройки.</summary>
+    private void InboundNetbiosUdp(PacketRecord r, long now)
+    {
+        string ip = r.SourceIp;
+        if (ip.Length == 0 || IsPrivate(ip) || _notify.IsWhitelisted(ip)) return;
+        string key = ip + ":udp" + r.DestinationPort;
+        if (_exposed.TryGetValue(key, out var last) && now - last < 600_000) return;
+        if (_exposed.Count >= MaxEntries) _exposed.Clear();
+        _exposed[key] = now;
+        _notify.RaiseExternal(NotificationSeverity.Warning, "Входящий NetBIOS из внешней сети",
+            $"{ip} → UDP {r.DestinationPort} этого ПК (имена/служебные пакеты NetBIOS не должны приходить из интернета)");
+    }
+
+    /// <summary>Подключение к чувствительному порту этого ПК из локальной сети от незнакомого (не доверенного) устройства.</summary>
+    private void LanConnection(string ip, int port, long now)
+    {
+        if (!SensitivePorts.Contains(port) || LanLookup is null) return;
+        var (trusted, label) = LanLookup(ip);
+        if (trusted == true) return;
+
+        string key = "lan:" + ip + ":" + port;
+        if (_exposed.TryGetValue(key, out var last) && now - last < 600_000) return;
+        if (_exposed.Count >= MaxEntries) _exposed.Clear();
+        _exposed[key] = now;
+        _notify.RaiseExternal(NotificationSeverity.Info, "Подключение из локальной сети",
+            $"{ip}{(label.Length > 0 ? $" ({label})" : " (устройство не опознано)")} → порт {port} ({PortServiceCatalog.LookupPair("TCP", 0, port)}) этого ПК");
     }
 
     private void InboundSyn(PacketRecord r, long now)
@@ -225,7 +259,11 @@ public sealed class AnomalyDetectionService : IDisposable
                 (external ? " (внешний адрес)" : " (локальная сеть)"));
         }
 
-        if (!external) return;
+        if (!external)
+        {
+            LanConnection(ip, port, now);
+            return;
+        }
 
         // Подбор пароля / частые попытки на служебный порт
         if (AuthPorts.Contains(port))

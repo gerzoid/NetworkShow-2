@@ -40,6 +40,12 @@ public sealed class PacketCaptureService : IDisposable
     /// <summary>Извлекать SNI (TLS/QUIC). Выключено по умолчанию — домены не читаются, пока пользователь не включит.</summary>
     public bool ExtractSites { get => _extractSites; set => _extractSites = value; }
 
+    private volatile bool _parseDeviceHints;
+    /// <summary>Разбирать DHCP/mDNS/SSDP для определения типа устройств в сети (событие <see cref="DeviceHintFound"/>).</summary>
+    public bool ParseDeviceHints { get => _parseDeviceHints; set => _parseDeviceHints = value; }
+
+    public event Action<DeviceHint>? DeviceHintFound;
+
     private volatile bool _parseDnsPackets = true;
     /// <summary>Разбирать DNS-запросы из пакетов (false, пока работает ETW-мониторинг DNS — он точнее и даёт процесс).</summary>
     public bool ParseDnsPackets { get => _parseDnsPackets; set => _parseDnsPackets = value; }
@@ -85,12 +91,14 @@ public sealed class PacketCaptureService : IDisposable
                 if (dev is LibPcapLiveDevice live && !string.IsNullOrEmpty(live.Interface?.FriendlyName))
                     friendly = live.Interface.FriendlyName;
 
-                result.Add(new NetworkInterfaceInfo
+                var info = new NetworkInterfaceInfo
                 {
                     Name = dev.Name,
                     Description = dev.Description ?? string.Empty,
                     FriendlyName = friendly
-                });
+                };
+                InterfaceProbe.Fill(info);
+                result.Add(info);
             }
         }
         catch (Exception ex)
@@ -170,6 +178,7 @@ public sealed class PacketCaptureService : IDisposable
             string protocol;
             string? sni = null;
             string? dnsName = null;
+            bool wantHints = false;
             var payload = h.PayloadLength > 0 ? data.Slice(h.PayloadOffset, h.PayloadLength) : default;
             if (h.IsTcp)
             {
@@ -180,6 +189,7 @@ public sealed class PacketCaptureService : IDisposable
             else if (h.IsUdp)
             {
                 protocol = "UDP";
+                if (_parseDeviceHints && DeviceHintParser.IsCandidate(h.SourcePort, h.DestinationPort)) wantHints = true;
                 if (_extractSites && _parseDnsPackets && h.DestinationPort == 53 && payload.Length > 16)
                     DnsQueryParser.TryParse(payload, out dnsName, out _);
                 // HTTP/3: SNI из QUIC Initial (только исходящие ClientHello на 443,
@@ -193,6 +203,9 @@ public sealed class PacketCaptureService : IDisposable
             }
 
             var src = GetIpInfo(h.Source, data, isSource: true);
+            if (wantHints)
+                foreach (var hint in DeviceHintParser.Parse(h.SourcePort, h.DestinationPort, payload, src.Text))
+                    DeviceHintFound?.Invoke(hint);
             var dst = GetIpInfo(h.Destination, data, isSource: false);
             var direction = DetermineDirection(src.IsLocal, dst.IsLocal);
 

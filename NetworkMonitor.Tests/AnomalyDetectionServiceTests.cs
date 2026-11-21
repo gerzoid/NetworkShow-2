@@ -4,6 +4,7 @@ using Xunit;
 
 namespace NetworkMonitor.Tests;
 
+[Collection("Settings")]
 public class AnomalyDetectionServiceTests : IDisposable
 {
     private const byte Syn = 0x02;
@@ -191,5 +192,29 @@ public class AnomalyDetectionServiceTests : IDisposable
     {
         for (int i = 0; i < 60; i++) _svc.InspectDnsQuery($"chunk{i}abc.t.evil.com", "dnscat");
         Assert.True(Has("Подозрение на DNS-туннель"));
+    }
+
+    [Fact]
+    public void ReverseDnsLookups_AreNotTunnel()
+    {
+        for (int i = 0; i < 80; i++) _svc.InspectDnsQuery($"{i}.1.168.192.in-addr.arpa", "NetworkMonitor");
+        Assert.False(Has("Подозрение на DNS-туннель"));
+    }
+
+    [Fact]
+    public void ExternalNetbiosUdp_Warns_LanIgnored()
+    {
+        _svc.Inspect(Pkt("192.168.1.50", 137, "192.168.1.10", 137, TrafficDirection.Inbound, proto: "UDP"));
+        Assert.False(Has("Входящий NetBIOS из внешней сети"));
+        _svc.Inspect(Pkt("1.2.3.4", 137, "192.168.1.10", 137, TrafficDirection.Inbound, proto: "UDP"));
+        Assert.True(Has("Входящий NetBIOS из внешней сети"));
+    }
+
+    [Fact]
+    public void Netbios139_Bruteforce_Counted()
+    {
+        for (int i = 0; i < 25; i++)
+            _svc.Inspect(Pkt("1.2.3.4", 4000 + i, "192.168.1.10", 139, TrafficDirection.Inbound, flags: Syn));
+        Assert.True(Has("Подозрение на подбор пароля"));
     }
 }

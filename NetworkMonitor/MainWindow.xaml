@@ -32,9 +32,28 @@
             <MenuItem Header="В белый список" Click="WhitelistIp_Click" />
         </ContextMenu>
 
+        <!-- Копирование из таблиц: значение ячейки, строка, вся таблица -->
+        <ContextMenu x:Key="CellCopyMenu">
+            <MenuItem Header="Копировать значение ячейки" Click="CopyCell_Click" />
+            <MenuItem Header="Копировать строку" Click="CopyRow_Click" />
+            <MenuItem Header="Копировать всю таблицу (с заголовками)" Click="CopyTable_Click" />
+        </ContextMenu>
+
         <Style x:Key="ConnectionRowStyle" TargetType="DataGridRow" BasedOn="{StaticResource {x:Type DataGridRow}}">
             <Setter Property="ContextMenu" Value="{StaticResource ConnectionRowMenu}" />
             <Setter Property="ToolTip" Value="{Binding Endpoint}" />
+        </Style>
+
+        <Style x:Key="LanDeviceRowStyle" TargetType="DataGridRow" BasedOn="{StaticResource {x:Type DataGridRow}}">
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding IsOnline}" Value="False">
+                    <Setter Property="Opacity" Value="0.55" />
+                </DataTrigger>
+                <DataTrigger Binding="{Binding IsKnown}" Value="False">
+                    <Setter Property="Foreground" Value="{DynamicResource WarnBrush}" />
+                    <Setter Property="FontWeight" Value="SemiBold" />
+                </DataTrigger>
+            </Style.Triggers>
         </Style>
 
         <Style x:Key="NotificationRowStyle" TargetType="DataGridRow" BasedOn="{StaticResource {x:Type DataGridRow}}">
@@ -86,7 +105,72 @@
 
                 <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
                     <TextBlock Text="Интерфейс" VerticalAlignment="Center" Margin="0,0,6,0" Foreground="{DynamicResource MutedBrush}" />
-                    <ComboBox Width="260" ItemsSource="{Binding Interfaces}" SelectedItem="{Binding SelectedInterface}" />
+                    <ComboBox Width="320" ItemsSource="{Binding Interfaces}" SelectedItem="{Binding SelectedInterface}"
+                              ToolTip="Сетевой адаптер для захвата. ★ — основной (со шлюзом), зелёная скорость — идёт трафик.">
+                        <ComboBox.ItemTemplate>
+                            <DataTemplate>
+                                <Grid>
+                                    <!-- Закрытый список: одна строка -->
+                                    <TextBlock Text="{Binding Summary}" TextTrimming="CharacterEllipsis">
+                                        <TextBlock.Style>
+                                            <Style TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
+                                                <Setter Property="Visibility" Value="Collapsed" />
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding RelativeSource={RelativeSource FindAncestor, AncestorType=ComboBoxItem}}" Value="{x:Null}">
+                                                        <Setter Property="Visibility" Value="Visible" />
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </TextBlock.Style>
+                                    </TextBlock>
+                                    <!-- Выпадающий список: имя, адреса и живая скорость -->
+                                    <StackPanel Margin="0,3">
+                                        <StackPanel.Style>
+                                            <Style TargetType="StackPanel">
+                                                <Setter Property="Visibility" Value="Visible" />
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding RelativeSource={RelativeSource FindAncestor, AncestorType=ComboBoxItem}}" Value="{x:Null}">
+                                                        <Setter Property="Visibility" Value="Collapsed" />
+                                                    </DataTrigger>
+                                                    <DataTrigger Binding="{Binding IsUp}" Value="False">
+                                                        <Setter Property="Opacity" Value="0.5" />
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </StackPanel.Style>
+                                        <StackPanel Orientation="Horizontal">
+                                            <TextBlock Text="{Binding DisplayName}" FontWeight="SemiBold" />
+                                            <TextBlock Text="  ★ основной" Foreground="{DynamicResource WarnBrush}" FontWeight="SemiBold" FontSize="11" VerticalAlignment="Center">
+                                                <TextBlock.Style>
+                                                    <Style TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
+                                                        <Setter Property="Visibility" Value="Collapsed" />
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding IsDefault}" Value="True">
+                                                                <Setter Property="Visibility" Value="Visible" />
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </TextBlock.Style>
+                                            </TextBlock>
+                                        </StackPanel>
+                                        <TextBlock Text="{Binding Details}" Foreground="{DynamicResource MutedBrush}" FontSize="11" />
+                                        <TextBlock Text="{Binding RateText}" FontSize="11" Foreground="{DynamicResource MutedBrush}">
+                                            <TextBlock.Style>
+                                                <Style TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding IsActive}" Value="True">
+                                                            <Setter Property="Foreground" Value="{DynamicResource SuccessBrush}" />
+                                                            <Setter Property="FontWeight" Value="SemiBold" />
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </TextBlock.Style>
+                                        </TextBlock>
+                                    </StackPanel>
+                                </Grid>
+                            </DataTemplate>
+                        </ComboBox.ItemTemplate>
+                    </ComboBox>
                     <Button Content="&#xE72C;" FontFamily="Segoe MDL2 Assets" Command="{Binding RefreshInterfacesCommand}"
                             Style="{DynamicResource GhostButton}" Margin="4,0,0,0"
                             ToolTip="Обновить список интерфейсов (после подключения VPN или адаптера)"
@@ -389,7 +473,7 @@
 
                         <TabControl Grid.Row="1" SelectedIndex="{Binding SelectedTabIndex, Mode=TwoWay}">
                             <TabItem Header="Протоколы">
-                                <DataGrid ItemsSource="{Binding Protocols}" SelectedItem="{Binding SelectedProtocol, Mode=TwoWay}"
+                                <DataGrid ItemsSource="{Binding Protocols}" ContextMenu="{StaticResource CellCopyMenu}" PreviewMouseRightButtonDown="CopyGrid_PreviewRightButtonDown" SelectedItem="{Binding SelectedProtocol, Mode=TwoWay}"
                                           IsReadOnly="True" AutoGenerateColumns="False">
                                     <DataGrid.Columns>
                                         <DataGridTextColumn Header="Протокол / сервис" Binding="{Binding Name}" Width="*" />
@@ -407,7 +491,7 @@
 
                             <TabItem Header="Сайты">
                                 <Grid>
-                                    <DataGrid ItemsSource="{Binding Sites}" SelectedItem="{Binding SelectedSite, Mode=TwoWay}"
+                                    <DataGrid ItemsSource="{Binding Sites}" ContextMenu="{StaticResource CellCopyMenu}" PreviewMouseRightButtonDown="CopyGrid_PreviewRightButtonDown" SelectedItem="{Binding SelectedSite, Mode=TwoWay}"
                                               IsReadOnly="True" AutoGenerateColumns="False">
                                         <DataGrid.Columns>
                                             <DataGridTextColumn Header="Домен" Binding="{Binding Name}" Width="*" />
@@ -440,7 +524,7 @@
                             </TabItem>
 
                             <TabItem Header="Процессы">
-                                <DataGrid ItemsSource="{Binding Processes}" SelectedItem="{Binding SelectedProcess, Mode=TwoWay}"
+                                <DataGrid ItemsSource="{Binding Processes}" ContextMenu="{StaticResource CellCopyMenu}" PreviewMouseRightButtonDown="CopyGrid_PreviewRightButtonDown" SelectedItem="{Binding SelectedProcess, Mode=TwoWay}"
                                           IsReadOnly="True" AutoGenerateColumns="False">
                                     <DataGrid.Columns>
                                         <DataGridTextColumn Header="Процесс" Binding="{Binding Name}" Width="*" />
@@ -457,7 +541,7 @@
                                 </DataGrid>
                             </TabItem>
                             <TabItem Header="Зоны">
-                                <DataGrid ItemsSource="{Binding Zones}" SelectedItem="{Binding SelectedZone, Mode=TwoWay}"
+                                <DataGrid ItemsSource="{Binding Zones}" ContextMenu="{StaticResource CellCopyMenu}" PreviewMouseRightButtonDown="CopyGrid_PreviewRightButtonDown" SelectedItem="{Binding SelectedZone, Mode=TwoWay}"
                                           IsReadOnly="True" AutoGenerateColumns="False">
                                     <DataGrid.Columns>
                                         <DataGridTextColumn Header="Зона" Binding="{Binding Name}" Width="*" />
@@ -474,7 +558,7 @@
                                 </DataGrid>
                             </TabItem>
                             <TabItem Header="Служебный трафик">
-                                <DataGrid ItemsSource="{Binding Categories}" SelectedItem="{Binding SelectedCategory, Mode=TwoWay}"
+                                <DataGrid ItemsSource="{Binding Categories}" ContextMenu="{StaticResource CellCopyMenu}" PreviewMouseRightButtonDown="CopyGrid_PreviewRightButtonDown" SelectedItem="{Binding SelectedCategory, Mode=TwoWay}"
                                           IsReadOnly="True" AutoGenerateColumns="False">
                                     <DataGrid.Columns>
                                         <DataGridTextColumn Header="Категория" Binding="{Binding Name}" Width="*" />
@@ -496,7 +580,7 @@
 
                         <DockPanel Grid.Row="3">
                             <TextBlock DockPanel.Dock="Top" Text="{Binding DetailTitle}" FontWeight="SemiBold" Margin="0,0,0,4" />
-                            <DataGrid ItemsSource="{Binding Details}" IsReadOnly="True" AutoGenerateColumns="False">
+                            <DataGrid ItemsSource="{Binding Details}" ContextMenu="{StaticResource CellCopyMenu}" PreviewMouseRightButtonDown="CopyGrid_PreviewRightButtonDown" IsReadOnly="True" AutoGenerateColumns="False">
                                 <DataGrid.Columns>
                                     <DataGridTextColumn Header="Процесс" Binding="{Binding ProcessName}" Width="140" />
                                     <DataGridTextColumn Header="Proto" Binding="{Binding Protocol}" Width="60" />
@@ -513,13 +597,31 @@
                 </TabItem>
 
                 <TabItem Header="Скорость">
-                    <Border Style="{DynamicResource Card}">
-                        <lvc:CartesianChart Series="{Binding SpeedSeries}"
-                                            XAxes="{Binding SpeedXAxes}"
-                                            YAxes="{Binding SpeedYAxes}"
-                                            LegendPosition="Top"
-                                            ZoomMode="None" />
-                    </Border>
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
+                        <StackPanel Orientation="Horizontal" Margin="4,2,0,8">
+                            <TextBlock Text="Приложение:" VerticalAlignment="Center" Margin="0,0,6,0" Foreground="{DynamicResource MutedBrush}" />
+                            <ComboBox Width="210" ItemsSource="{Binding ChartProcessOptions}" SelectedItem="{Binding ChartProcess}"
+                                      ToolTip="Показать скорость только выбранного приложения (список пополняется по мере появления трафика)" />
+                            <TextBlock Text="Протокол:" VerticalAlignment="Center" Margin="14,0,6,0" Foreground="{DynamicResource MutedBrush}" />
+                            <ComboBox Width="100" ItemsSource="{Binding ChartProtocolOptions}" SelectedItem="{Binding ChartProtocol}" />
+                            <Button Content="Сбросить" Command="{Binding ResetChartFilterCommand}" Style="{DynamicResource GhostButton}" Margin="8,0,0,0" />
+                            <TextBlock Text="{Binding SpeedChartTitle}" VerticalAlignment="Center" Margin="14,0,0,0" FontWeight="SemiBold" />
+                        </StackPanel>
+                        <Border Grid.Row="1" Style="{DynamicResource Card}">
+                            <lvc:CartesianChart Series="{Binding SpeedSeries}"
+                                                XAxes="{Binding SpeedXAxes}"
+                                                YAxes="{Binding SpeedYAxes}"
+                                                Background="{DynamicResource PanelBrush}"
+                                                LegendPosition="Top"
+                                                LegendTextPaint="{Binding LegendTextPaint}"
+                                                TooltipBackgroundPaint="{Binding TooltipBackgroundPaint}"
+                                                ZoomMode="None" />
+                        </Border>
+                    </Grid>
                 </TabItem>
 
                 <TabItem IsSelected="{Binding NotificationsTabActive, Mode=TwoWay}">
@@ -600,6 +702,40 @@
                                 <DataGridTextColumn Header="Файл / путь" Binding="{Binding Path}" Width="*" />
                                 <DataGridTextColumn Header="Доступ" Binding="{Binding Access}" Width="130" />
                                 <DataGridTextColumn Header="Источник" Binding="{Binding Source}" Width="80" />
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </Grid>
+                </TabItem>
+
+                <TabItem Header="Устройства (ARP)">
+                    <Grid DataContext="{Binding LanDevices}" Margin="6">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+                            <Button Content="Сканировать сеть" Command="{Binding ScanCommand}" Style="{DynamicResource GhostButton}"
+                                    ToolTip="Отправить ARP-запрос по всем адресам подсети и найти устройства, с которыми ПК ещё не общался"
+                                    IsEnabled="{Binding IsScanning, Converter={StaticResource InverseBoolConverter}}" />
+                            <Button Content="Доверять выбранному" Command="{Binding TrustSelectedCommand}" Style="{DynamicResource GhostButton}" Margin="4,0,0,0"
+                                    ToolTip="Пометить устройство как своё: уведомления о нём прекратятся" />
+                            <Button Content="Доверять всем" Command="{Binding TrustAllCommand}" Style="{DynamicResource GhostButton}" Margin="4,0,0,0"
+                                    ToolTip="Пометить как доверенные все найденные сейчас устройства" />
+                            <TextBlock Text="{Binding Summary}" VerticalAlignment="Center" Margin="12,0,0,0" Foreground="{DynamicResource MutedBrush}" />
+                        </StackPanel>
+                        <DataGrid Grid.Row="1" ItemsSource="{Binding Devices}" ContextMenu="{StaticResource CellCopyMenu}" PreviewMouseRightButtonDown="CopyGrid_PreviewRightButtonDown" SelectedItem="{Binding SelectedDevice, Mode=TwoWay}"
+                                  IsReadOnly="True" AutoGenerateColumns="False" RowStyle="{StaticResource LanDeviceRowStyle}">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="Состояние" Binding="{Binding StatusText}" Width="95" />
+                                <DataGridTextColumn Header="IP" Binding="{Binding Ip}" Width="120" SortMemberPath="IpSort" />
+                                <DataGridTextColumn Header="MAC" Binding="{Binding Mac}" Width="140" />
+                                <DataGridTextColumn Header="Производитель" Binding="{Binding Vendor}" Width="190" />
+                                <DataGridTextColumn Header="Тип (предположительно)" Binding="{Binding DeviceType}" Width="250" />
+                                <DataGridTextColumn Header="Имя" Binding="{Binding Name}" Width="170" />
+                                <DataGridTextColumn Header="Признаки (DHCP / mDNS / SSDP)" Binding="{Binding HintsText}" Width="*" MinWidth="200" />
+                                <DataGridTextColumn Header="Доверие" Binding="{Binding TrustText}" Width="100" />
+                                <DataGridTextColumn Header="Впервые" Binding="{Binding FirstSeen, StringFormat=dd.MM HH:mm}" Width="95" />
+                                <DataGridTextColumn Header="Последний раз" Binding="{Binding LastSeen, StringFormat=HH:mm:ss}" Width="105" />
                             </DataGrid.Columns>
                         </DataGrid>
                     </Grid>

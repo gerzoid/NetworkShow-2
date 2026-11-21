@@ -16,6 +16,8 @@ public sealed class AppSettings
     public DetectionSettings Detection { get; set; } = new();
     /// <summary>Процессы, уже замеченные в сети (база для «новый процесс в сети»).</summary>
     public List<string> KnownProcesses { get; set; } = new();
+    /// <summary>Доверенные устройства локальной сети (по MAC) — всё остальное считается новым.</summary>
+    public List<KnownDevice> KnownDevices { get; set; } = new();
     public string LogFormat { get; set; } = "Json";
     public string ProtocolFilter { get; set; } = "All";
     public string ScopeFilter { get; set; } = "Все";
@@ -28,6 +30,13 @@ public sealed class AppSettings
     public double WindowWidth { get; set; }
     public double WindowHeight { get; set; }
     public bool WindowMaximized { get; set; }
+}
+
+public sealed class KnownDevice
+{
+    public string Mac { get; set; } = string.Empty;
+    public string Name { get; set; } = string.Empty;
+    public DateTime FirstSeen { get; set; }
 }
 
 public sealed class DetectionSettings

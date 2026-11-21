@@ -3,6 +3,7 @@ using System.Collections.Specialized;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Management;
 using System.Windows;
 using System.Windows.Controls;
@@ -38,6 +39,59 @@ public partial class MainWindow : Window
             _trayIcon?.Dispose();
         };
     }
+
+    // ───────────── Копирование из таблиц ─────────────
+
+    private string? _copyCellText;
+
+    /// <summary>Запоминает ячейку под курсором и выделяет её строку (чтобы работали «строка» и панель детализации).</summary>
+    private void CopyGrid_PreviewRightButtonDown(object sender, System.Windows.Input.MouseButtonEventArgs e)
+    {
+        _copyCellText = null;
+        DependencyObject? dep = e.OriginalSource as DependencyObject;
+        while (dep is not null and not DataGridCell)
+            dep = dep is System.Windows.Media.Visual or System.Windows.Media.Media3D.Visual3D
+                ? System.Windows.Media.VisualTreeHelper.GetParent(dep)
+                : LogicalTreeHelper.GetParent(dep);
+        if (dep is DataGridCell cell && sender is DataGrid grid)
+        {
+            _copyCellText = ClipboardText(cell.Column, cell.DataContext);
+            grid.SelectedItem = cell.DataContext;
+        }
+    }
+
+    private static string ClipboardText(DataGridColumn column, object item) =>
+        column.OnCopyingCellClipboardContent(item)?.ToString() ?? string.Empty;
+
+    private static DataGrid? GridOf(object sender) =>
+        ((sender as MenuItem)?.Parent as ContextMenu)?.PlacementTarget as DataGrid;
+
+    private void CopyCell_Click(object sender, RoutedEventArgs e)
+    {
+        if (!string.IsNullOrEmpty(_copyCellText)) SafeSetClipboard(_copyCellText);
+    }
+
+    private void CopyRow_Click(object sender, RoutedEventArgs e)
+    {
+        var grid = GridOf(sender);
+        if (grid?.SelectedItem is null) return;
+        SafeSetClipboard(RowText(grid, grid.SelectedItem));
+    }
+
+    private void CopyTable_Click(object sender, RoutedEventArgs e)
+    {
+        var grid = GridOf(sender);
+        if (grid is null) return;
+        var lines = new System.Collections.Generic.List<string>
+        {
+            string.Join("\t", grid.Columns.Select(c => c.Header?.ToString() ?? string.Empty))
+        };
+        foreach (var item in grid.Items) lines.Add(RowText(grid, item));
+        SafeSetClipboard(string.Join(Environment.NewLine, lines));
+    }
+
+    private static string RowText(DataGrid grid, object item) =>
+        string.Join("\t", grid.Columns.Select(c => ClipboardText(c, item)));
 
     private void SettingsButton_Click(object sender, RoutedEventArgs e) => SettingsPopup.IsOpen = true;
 

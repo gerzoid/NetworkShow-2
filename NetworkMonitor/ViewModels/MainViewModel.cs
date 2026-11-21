@@ -38,6 +38,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private readonly DnsResolverService _dns;
     private readonly Dispatcher _dispatcher;
     private readonly DispatcherTimer _uiTimer;
+    private readonly DispatcherTimer _ifaceTimer;
     private readonly Timer _pruneTimer;
     private CancellationTokenSource? _consumerCts;
     private Task? _consumerTask;
@@ -178,10 +179,60 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     public ObservableCollection<Axis> SpeedXAxes { get; }
     public ObservableCollection<Axis> SpeedYAxes { get; }
 
+    // ───── График скорости: фильтр по приложению и протоколу ─────
+    public ObservableCollection<string> ChartProcessOptions { get; } = new() { "Все" };
+    public string[] ChartProtocolOptions { get; } = { "Все", "TCP", "UDP", "ICMP", "Другие" };
+
+    [ObservableProperty] private string chartProcess = "Все";
+    [ObservableProperty] private string chartProtocol = "Все";
+    [ObservableProperty] private string speedChartTitle = "Весь трафик";
+
+    /// <summary>Цвет подписей легенды и подсказок графика — под тему.</summary>
+    [ObservableProperty] private SolidColorPaint legendTextPaint = new(new SKColor(0xF1, 0xF1, 0xF3));
+    [ObservableProperty] private SolidColorPaint tooltipBackgroundPaint = new(new SKColor(0x26, 0x26, 0x2C));
+
+    private bool ChartFilterActive => ChartProcess != "Все" || ChartProtocol != "Все";
+
+    partial void OnChartProcessChanged(string value) { if (value is not null) ApplyChartFilter(); }
+    partial void OnChartProtocolChanged(string value) { if (value is not null) ApplyChartFilter(); }
+
+    private void ApplyChartFilter()
+    {
+        string? proto = ChartProtocol switch { "Все" => null, "Другие" => "OTHER", var p => p };
+        _aggregation.SetChartFilter(ChartProcess == "Все" ? null : ChartProcess, proto);
+        _speedInPoints.Clear();
+        _speedOutPoints.Clear();
+        SpeedChartTitle = ChartFilterActive
+            ? "Фильтр: " + string.Join(" · ", new[] { ChartProcess != "Все" ? ChartProcess : null, ChartProtocol != "Все" ? ChartProtocol : null }.Where(x => x is not null))
+            : "Весь трафик";
+    }
+
+    [RelayCommand]
+    private void ResetChartFilter()
+    {
+        ChartProcess = "Все";
+        ChartProtocol = "Все";
+    }
+
+    /// <summary>Добавляет в список приложений графика новые процессы (существующие не трогаем, чтобы не сбросить выбор).</summary>
+    private void RefreshChartProcessOptions()
+    {
+        foreach (var name in _aggregation.TopProcesses(60).Select(p => p.Process).OrderBy(n => n, StringComparer.OrdinalIgnoreCase))
+        {
+            if (ChartProcessOptions.Contains(name)) continue;
+            int idx = 1;
+            while (idx < ChartProcessOptions.Count && string.Compare(ChartProcessOptions[idx], name, StringComparison.OrdinalIgnoreCase) < 0) idx++;
+            ChartProcessOptions.Insert(idx, name);
+        }
+    }
+
     /// <summary>Режим мониторинга доступа к SMB-шарам этого ПК.</summary>
     public ShareAccessViewModel ShareAccess { get; }
     public AnalyticsViewModel Analytics { get; }
+    public LanDevicesViewModel LanDevices { get; }
+    private readonly LanDeviceMonitor _lanMonitor;
 
+    private int _chartOptionsCounter;
     private readonly ObservableCollection<DateTimePoint> _speedInPoints = new();
     private readonly ObservableCollection<DateTimePoint> _speedOutPoints = new();
 
@@ -195,6 +246,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         Analytics = new AnalyticsViewModel(() => _aggregation.Connections.ToList(), msg => StatusText = msg);
         _notifications = new NotificationService();
         _anomaly = new AnomalyDetectionService(_notifications);
+        _lanMonitor = new LanDeviceMonitor(_notifications);
+        _anomaly.LanLookup = _lanMonitor.LookupByIp;
+        _captureService.DeviceHintFound += _lanMonitor.AddHint;
+        LanDevices = new LanDevicesViewModel(_lanMonitor, msg => StatusText = msg, _dispatcher);
         _logonMonitor = new LogonMonitor(_notifications);
         _dnsMonitor = new DnsMonitorService(_processResolver);
         _dnsMonitor.StatusChanged += msg => _dispatcher.BeginInvoke(() => StatusText = msg);
@@ -233,7 +288,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 Values = _speedInPoints,
                 Fill = new SolidColorPaint(new SKColor(40, 120, 200, 80)),
                 Stroke = new SolidColorPaint(new SKColor(40, 140, 230)) { StrokeThickness = 2 },
-                GeometrySize = 0
+                GeometrySize = 0,
+                LineSmoothness = 0.15
             },
             new LineSeries<DateTimePoint>
             {
@@ -241,7 +297,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 Values = _speedOutPoints,
                 Fill = new SolidColorPaint(new SKColor(220, 100, 80, 80)),
                 Stroke = new SolidColorPaint(new SKColor(230, 110, 90)) { StrokeThickness = 2 },
-                GeometrySize = 0
+                GeometrySize = 0,
+                LineSmoothness = 0.15
             }
         };
         SpeedXAxes = new ObservableCollection<Axis>
@@ -258,6 +315,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             new Axis
             {
                 Labeler = v => ByteFormatter.FormatRate((long)v),
+                MinLimit = 0,
                 LabelsPaint = new SolidColorPaint(SKColors.LightGray),
                 SeparatorsPaint = new SolidColorPaint(new SKColor(80, 80, 80))
             }
@@ -282,7 +340,17 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _uiTimer.Tick += UiTick;
         _uiTimer.Start();
 
-        if (DetectAnomalies) { _anomaly.Start(); _logonMonitor.Start(); }
+        // Живая скорость адаптеров в списке выбора интерфейса
+        _ifaceTimer = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromSeconds(2) };
+        _ifaceTimer.Tick += (_, _) =>
+        {
+            if (UiUpdatesSuspended) return;
+            foreach (var i in Interfaces) InterfaceProbe.Sample(i);
+        };
+        _ifaceTimer.Start();
+
+        if (DetectAnomalies) { _anomaly.Start(); _logonMonitor.Start(); _lanMonitor.Start(); }
+        _captureService.ParseDeviceHints = DetectAnomalies;
         if (UseThreatFeed) _threatFeed.Start();
 
         _pruneTimer = new Timer(_ =>
@@ -322,8 +390,14 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     {
         var preferred = SelectedInterface?.Name ?? SettingsService.Current.InterfaceName;
         Interfaces.Clear();
-        foreach (var i in _captureService.ListInterfaces())
+        // Основной адаптер (со шлюзом) первым, затем подключённые с IPv4, затем остальные
+        foreach (var i in _captureService.ListInterfaces()
+                     .OrderByDescending(x => x.IsDefault).ThenByDescending(x => x.IsUp && x.Addresses.Length > 0)
+                     .ThenByDescending(x => x.IsUp).ThenBy(x => x.DisplayName))
+        {
+            InterfaceProbe.Sample(i);
             Interfaces.Add(i);
+        }
         SelectedInterface = Interfaces.FirstOrDefault(i => i.Name == preferred) ?? Interfaces.FirstOrDefault();
         if (Interfaces.Count == 0)
             StatusText = "Сетевые интерфейсы не найдены. Установите Npcap (https://npcap.com).";
@@ -691,6 +765,15 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         long rateOut = (long)(bOut / seconds);
         _notifications.RecordTrafficSample(rateIn + rateOut);
 
+        // График: общий трафик или только выбранное приложение / протокол (счётчики сбрасываем каждый тик)
+        long chartIn = rateIn, chartOut = rateOut;
+        if (ChartFilterActive)
+        {
+            var (fIn, fOut) = _aggregation.SampleFilteredInterval();
+            chartIn = (long)(fIn / seconds);
+            chartOut = (long)(fOut / seconds);
+        }
+
         SpeedInText = ByteFormatter.FormatRate(rateIn);
         SpeedOutText = ByteFormatter.FormatRate(rateOut);
 
@@ -704,8 +787,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _aggregation.PublishCounters();
 
         var now = DateTime.Now;
-        _speedInPoints.Add(new DateTimePoint(now, rateIn));
-        _speedOutPoints.Add(new DateTimePoint(now, rateOut));
+        _speedInPoints.Add(new DateTimePoint(now, chartIn));
+        _speedOutPoints.Add(new DateTimePoint(now, chartOut));
+        if (++_chartOptionsCounter >= 10) { _chartOptionsCounter = 0; RefreshChartProcessOptions(); }
         while (_speedInPoints.Count > 120) _speedInPoints.RemoveAt(0);
         while (_speedOutPoints.Count > 120) _speedOutPoints.RemoveAt(0);
 
@@ -732,6 +816,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             labelColor = new SKColor(0xF1, 0xF1, 0xF3);
             separatorColor = new SKColor(0x3D, 0x3D, 0x45);
         }
+
+        LegendTextPaint = new SolidColorPaint(labelColor);
+        TooltipBackgroundPaint = new SolidColorPaint(theme == Themes.AppTheme.Light ? new SKColor(0xFF, 0xFF, 0xFF) : new SKColor(0x26, 0x26, 0x2C));
 
         foreach (var axis in SpeedXAxes)
         {
@@ -876,8 +963,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     partial void OnDetectAnomaliesChanged(bool value)
     {
         SettingsService.Current.Detection.Enabled = value;
-        if (value) { _anomaly.Start(); _logonMonitor.Start(); }
-        else { _anomaly.Stop(); _logonMonitor.Stop(); }
+        _captureService.ParseDeviceHints = value;
+        if (value) { _anomaly.Start(); _logonMonitor.Start(); _lanMonitor.Start(); }
+        else { _anomaly.Stop(); _logonMonitor.Stop(); _lanMonitor.Stop(); }
         SettingsService.Save();
     }
 
@@ -936,12 +1024,14 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     public void Dispose()
     {
         _uiTimer.Stop();
+        _ifaceTimer.Stop();
         using (var wh = new ManualResetEvent(false))
         {
             if (_pruneTimer.Dispose(wh)) wh.WaitOne(1000);
         }
         Stop();
         _anomaly.Dispose();
+        _lanMonitor.Dispose();
         Analytics.Dispose();
         _logonMonitor.Dispose();
         _threatFeed.Dispose();

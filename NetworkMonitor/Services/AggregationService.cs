@@ -35,6 +35,38 @@ public sealed class AggregationService
     public event EventHandler<IReadOnlyList<ConnectionAggregate>>? ConnectionsPruned;
     public event EventHandler<IReadOnlyList<RemoteIpAggregate>>? RemoteIpsPruned;
 
+    // ───── Фильтр графика скорости: приложение и/или протокол ─────
+    private volatile string? _chartProcess;
+    private volatile string? _chartProtocol;
+    private long _filteredIn;
+    private long _filteredOut;
+
+    /// <summary>Фильтр для графика: имя процесса и/или протокол (TCP, UDP, ICMP, OTHER); null — без ограничения.</summary>
+    public void SetChartFilter(string? process, string? protocol)
+    {
+        _chartProcess = process;
+        _chartProtocol = protocol;
+        Interlocked.Exchange(ref _filteredIn, 0);
+        Interlocked.Exchange(ref _filteredOut, 0);
+    }
+
+    public (long BytesIn, long BytesOut) SampleFilteredInterval() =>
+        (Interlocked.Exchange(ref _filteredIn, 0), Interlocked.Exchange(ref _filteredOut, 0));
+
+    public static bool ProtocolMatches(string? selected, string protocol)
+    {
+        if (selected is null) return true;
+        bool icmp = protocol.StartsWith("Icmp", StringComparison.OrdinalIgnoreCase);
+        return selected switch
+        {
+            "TCP" => protocol.Equals("TCP", StringComparison.OrdinalIgnoreCase),
+            "UDP" => protocol.Equals("UDP", StringComparison.OrdinalIgnoreCase),
+            "ICMP" => icmp,
+            "OTHER" => !icmp && !protocol.Equals("TCP", StringComparison.OrdinalIgnoreCase) && !protocol.Equals("UDP", StringComparison.OrdinalIgnoreCase),
+            _ => true
+        };
+    }
+
     public void Add(PacketRecord r)
     {
         Interlocked.Increment(ref _packetsTotal);
@@ -165,6 +197,14 @@ public sealed class AggregationService
         Interlocked.Add(ref procEntry.Bytes, r.Size);
         Interlocked.Increment(ref procEntry.Packets);
         Volatile.Write(ref procEntry.LastSeenTicks, r.Timestamp.Ticks); // локальное время, как в Prune
+
+        var fp = _chartProcess;
+        var fproto = _chartProtocol;
+        if ((fp is not null || fproto is not null) && (fp is null || fp == process) && ProtocolMatches(fproto, r.Protocol))
+        {
+            if (isOutbound) Interlocked.Add(ref _filteredOut, r.Size);
+            else Interlocked.Add(ref _filteredIn, r.Size);
+        }
     }
 
     /// <summary>

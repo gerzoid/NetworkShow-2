@@ -23,6 +23,11 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- База производителей по MAC (IEEE OUI), без сети -->
+    <EmbeddedResource Include="Resources\oui.txt.gz" LogicalName="oui.txt.gz" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
     <PackageReference Include="LiveChartsCore.SkiaSharpView.WPF" Version="2.0.5" />
     <PackageReference Include="PacketDotNet" Version="1.4.8" />
