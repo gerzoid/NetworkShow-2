@@ -23,10 +23,24 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        // Ячейки «Имя ✎» редактируются прямо в таблице (двойной клик / F2), остальные колонки — только чтение
+        EnableColumnEdit(ConnectionsGrid, ConnAliasColumn);
+        EnableColumnEdit(RemoteIpsGrid, IpAliasColumn);
+        EnableColumnEdit(LanGrid, LanNameColumn);
+        EnableColumnEdit(NamesGrid, NamesNameColumn);
         RestoreWindowBounds();
         InitTrayIcon();
         HookViewModel();
         Closing += MainWindow_Closing;
+        Loaded += (_, _) =>
+        {
+            // Запуск из автозапуска: сразу в трей, без показа окна
+            if (App.StartedByAutostart && SettingsService.Current.StartMinimizedOnAutostart)
+            {
+                _trayHintShown = true;
+                Hide();
+            }
+        };
         IsVisibleChanged += (_, _) =>
         {
             if (DataContext is MainViewModel vm)
@@ -92,6 +106,41 @@ public partial class MainWindow : Window
 
     private static string RowText(DataGrid grid, object item) =>
         string.Join("\t", grid.Columns.Select(c => ClipboardText(c, item)));
+
+    private static void EnableColumnEdit(DataGrid grid, DataGridColumn editable)
+    {
+        foreach (var c in grid.Columns) c.IsReadOnly = !ReferenceEquals(c, editable);
+        grid.IsReadOnly = false;
+        grid.CanUserAddRows = false;
+        grid.CanUserDeleteRows = false;
+    }
+
+    /// <summary>Введённое в ячейке «Имя ✎» имя сохраняется для адреса (или устройства сети).</summary>
+    private void AliasCellEditEnding(object sender, DataGridCellEditEndingEventArgs e)
+    {
+        if (e.EditAction != DataGridEditAction.Commit || e.EditingElement is not TextBox tb || DataContext is not MainViewModel vm) return;
+        string text = tb.Text.Trim();
+        switch (e.Row.Item)
+        {
+            case ConnectionAggregate c: vm.SetIpAlias(c.RemoteIp, text); break;
+            case RemoteIpAggregate ip: vm.SetIpAlias(ip.Ip, text); break;
+            case LanDevice d: vm.LanDevices.Rename(d, text); break;
+            case IpNameEntry n when n.IsEditable: vm.SetIpAlias(n.Ip, text); break;
+        }
+    }
+
+    /// <summary>Имена устройств сети в общем списке не правятся — их меняют на вкладке «Устройства (ARP)».</summary>
+    private void NamesGrid_BeginningEdit(object sender, DataGridBeginningEditEventArgs e)
+    {
+        if (e.Row.Item is IpNameEntry { IsEditable: false }) e.Cancel = true;
+    }
+
+    private void OpenCleanup_Click(object sender, RoutedEventArgs e)
+    {
+        SettingsPopup.IsOpen = false;
+        if (DataContext is MainViewModel vm)
+            new CleanupWindow(vm) { Owner = this }.ShowDialog();
+    }
 
     private void SettingsButton_Click(object sender, RoutedEventArgs e) => SettingsPopup.IsOpen = true;
 

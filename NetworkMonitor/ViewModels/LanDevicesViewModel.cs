@@ -23,6 +23,17 @@ public sealed partial class LanDevicesViewModel : ObservableObject
     [ObservableProperty] private string summary = "Устройства ещё не найдены. Нажмите «Сканировать сеть».";
     [ObservableProperty] private bool isScanning;
 
+    /// <summary>Вызывается после переименования (обновить имена в таблицах).</summary>
+    public Action? Renamed { get; set; }
+
+    /// <summary>Задаёт устройству своё имя (по MAC).</summary>
+    public void Rename(LanDevice device, string name)
+    {
+        _monitor.Rename(device.Mac, name);
+        _status(string.IsNullOrWhiteSpace(name) ? $"Имя устройства {device.Ip} сброшено." : $"Устройство {device.Ip} названо «{name.Trim()}».");
+        Renamed?.Invoke();
+    }
+
     public LanDevicesViewModel(LanDeviceMonitor monitor, Action<string> status, Dispatcher dispatcher)
     {
         _monitor = monitor;

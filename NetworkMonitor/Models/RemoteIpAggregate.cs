@@ -13,6 +13,10 @@ public sealed partial class RemoteIpAggregate : ObservableObject
     [ObservableProperty]
     private string remoteHost = string.Empty;
 
+    /// <summary>Своё имя адреса, заданное пользователем.</summary>
+    [ObservableProperty]
+    private string alias = string.Empty;
+
     [ObservableProperty]
     private long bytes;
 

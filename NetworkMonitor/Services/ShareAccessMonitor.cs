@@ -31,6 +31,10 @@ public sealed class ShareAccessMonitor : IDisposable
     private EventLogWatcher? _watcher;
     private volatile bool _running;
     private int _polling;
+    private int _pollCount;
+    // Аудит включён целиком: тогда все обращения придут из журнала безопасности, а живой опрос только запоминает состояние.
+    // Само наличие подписки на журнал аудит не означает — при выключенной политике события не пишутся вовсе.
+    private volatile bool _auditOn;
 
     private readonly HashSet<string> _knownSessions = new();
     private readonly HashSet<string> _knownOpens = new();
@@ -72,11 +76,12 @@ public sealed class ShareAccessMonitor : IDisposable
         _knownSessions.Clear();
         _knownOpens.Clear();
 
+        _auditOn = GetAuditState() == AuditState.On;
         StartAuditWatcher();
         _pollTimer = new Timer(_ => Poll(), null, 0, (int)PollInterval.TotalMilliseconds);
-        StatusChanged?.Invoke(this, _watcher is not null
+        StatusChanged?.Invoke(this, _auditOn
             ? "Мониторинг шар запущен (живые сессии + журнал аудита)."
-            : "Мониторинг шар запущен (только живые сессии; аудит недоступен или выключен).");
+            : "Мониторинг шар запущен: видны текущие сессии и открытые файлы (аудит выключен — быстрые обращения и история недоступны).");
     }
 
     public void Stop()
@@ -96,7 +101,37 @@ public sealed class ShareAccessMonitor : IDisposable
     public void RestartAuditWatcher()
     {
         StopAuditWatcher();
+        _auditOn = GetAuditState() == AuditState.On;
         if (_running) StartAuditWatcher();
+    }
+
+    /// <summary>События из журнала безопасности за период (если аудит был включён): 5140, 5145, 4625. Самые новые — первыми.</summary>
+    public List<ShareAccessEvent> LoadHistory(TimeSpan span, int max)
+    {
+        var list = new List<ShareAccessEvent>();
+        try
+        {
+            _localAddrs = GetLocalAddresses();
+            long ms = (long)span.TotalMilliseconds;
+            var query = new EventLogQuery("Security", PathType.LogName,
+                $"*[System[(EventID=5140 or EventID=5145 or EventID=4625) and TimeCreated[timediff(@SystemTime) <= {ms}]]]")
+            { ReverseDirection = true };
+            using var reader = new EventLogReader(query);
+            while (list.Count < max && reader.ReadEvent() is { } rec)
+            {
+                using (rec)
+                {
+                    try
+                    {
+                        var ev = ParseSecurityEvent(rec, historical: true);
+                        if (ev is not null) list.Add(ev);
+                    }
+                    catch { }
+                }
+            }
+        }
+        catch { }
+        return list;
     }
 
     // ───────────── Журнал безопасности ─────────────
@@ -146,7 +181,7 @@ public sealed class ShareAccessMonitor : IDisposable
         catch { }
     }
 
-    private ShareAccessEvent? ParseSecurityEvent(EventRecord rec)
+    private ShareAccessEvent? ParseSecurityEvent(EventRecord rec, bool historical = false)
     {
         var xml = XDocument.Parse(rec.ToXml());
         var data = xml.Descendants().Where(x => x.Name.LocalName == "Data" && x.Attribute("Name") != null)
@@ -166,7 +201,7 @@ public sealed class ShareAccessMonitor : IDisposable
             case 4625:
             {
                 if (D("LogonType") != "3") return null;
-                return Decorate(new ShareAccessEvent
+                return Decorate(historical, new ShareAccessEvent
                 {
                     Timestamp = time,
                     Kind = ShareEventKind.LogonFailed,
@@ -182,7 +217,7 @@ public sealed class ShareAccessMonitor : IDisposable
             case 5140:
             {
                 var share = D("ShareName");
-                return Decorate(new ShareAccessEvent
+                return Decorate(historical, new ShareAccessEvent
                 {
                     Timestamp = time,
                     Kind = ShareEventKind.Session,
@@ -201,7 +236,7 @@ public sealed class ShareAccessMonitor : IDisposable
                 var share = CleanShare(D("ShareName"));
                 // Каналы IPC$ (srvsvc, wkssvc…) — служебный шум; интересны только отказы
                 if (!failure && share.Equals("IPC$", StringComparison.OrdinalIgnoreCase)) return null;
-                return Decorate(new ShareAccessEvent
+                return Decorate(historical, new ShareAccessEvent
                 {
                     Timestamp = time,
                     Kind = ShareEventKind.FileAccess,
@@ -231,7 +266,8 @@ public sealed class ShareAccessMonitor : IDisposable
             _localAddrs = GetLocalAddresses();
             var shares = LoadShares();
             // При активном аудите те же обращения придут из журнала — живой опрос только запоминает состояние
-            bool suppress = _watcher is not null;
+            if (++_pollCount % 15 == 0) _auditOn = GetAuditState() == AuditState.On; // политику могли включить, пока мониторинг работает
+            bool suppress = _auditOn;
 
             var seenSessions = new HashSet<string>();
             using (var s = new ManagementObjectSearcher(@"root\Microsoft\Windows\SMB",
@@ -246,7 +282,7 @@ public sealed class ShareAccessMonitor : IDisposable
                         seenSessions.Add(id);
                         if (!_knownSessions.Add(id) || suppress) continue;
                         string client = CleanIp(Convert.ToString(o["ClientComputerName"]) ?? "");
-                        Emit(Decorate(new ShareAccessEvent
+                        Emit(Decorate(false, new ShareAccessEvent
                         {
                             Kind = ShareEventKind.Session,
                             Client = client,
@@ -273,7 +309,7 @@ public sealed class ShareAccessMonitor : IDisposable
                         if (!_knownOpens.Add(key) || suppress) continue;
                         string path = Convert.ToString(o["Path"]) ?? "";
                         string rel = Convert.ToString(o["ShareRelativePath"]) ?? "";
-                        Emit(Decorate(new ShareAccessEvent
+                        Emit(Decorate(false, new ShareAccessEvent
                         {
                             Kind = ShareEventKind.OpenFile,
                             Client = CleanIp(Convert.ToString(o["ClientComputerName"]) ?? ""),
@@ -336,11 +372,12 @@ public sealed class ShareAccessMonitor : IDisposable
     // ───────────── Общие помощники ─────────────
 
     /// <summary>Если клиент — этот же ПК (loopback / свой адрес), это туннель: ищем процесс, держащий клиентский сокет к :445.</summary>
-    private ShareAccessEvent Decorate(ShareAccessEvent ev)
+    private ShareAccessEvent Decorate(bool historical, ShareAccessEvent ev)
     {
         if (!IsLocalOrigin(ev.Client)) return ev;
         int? port = int.TryParse(ev.ClientPort, out var p) && p > 0 ? p : null;
-        string via = FindTunnelProcess(port);
+        // Для истории таблица сокетов уже не та — процесс туннеля не искать
+        string via = historical ? string.Empty : FindTunnelProcess(port);
         return new ShareAccessEvent
         {
             Timestamp = ev.Timestamp,

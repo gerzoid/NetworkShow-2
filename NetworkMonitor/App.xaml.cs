@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
@@ -19,8 +20,12 @@ public partial class App : Application
     /// <summary>Windows завершает сеанс (shutdown/logoff) — окно не должно отменять закрытие.</summary>
     public static bool IsSessionEnding { get; private set; }
 
+    /// <summary>Запущено заданием автозапуска Windows (аргумент --autostart).</summary>
+    public static bool StartedByAutostart { get; private set; }
+
     protected override void OnStartup(StartupEventArgs e)
     {
+        StartedByAutostart = e.Args.Contains(AutostartService.Argument, StringComparer.OrdinalIgnoreCase);
         _singleInstanceMutex = new Mutex(true, @"Local\NetworkShow_SingleInstance", out _ownsMutex);
         if (!_ownsMutex)
         {

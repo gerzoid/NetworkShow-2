@@ -28,6 +28,9 @@ public sealed class LanDeviceMonitor : IDisposable
     private HashSet<string> _gateways = new();
     private long _learningUntil;
     private bool _knownDirty;
+    private bool _inventoryDirty;
+    private long _lastInventorySave;
+    private static readonly TimeSpan InventoryTtl = TimeSpan.FromDays(180);
     private Timer? _timer;
 
     /// <summary>Источник записей ARP (подменяется в тестах).</summary>
@@ -47,7 +50,9 @@ public sealed class LanDeviceMonitor : IDisposable
             if (_timer is not null) return;
             _known.Clear();
             foreach (var k in SettingsService.Current.KnownDevices) _known.Add(k.Mac);
-            _learningUntil = _known.Count == 0 ? Clock() + S.LearningMinutes * 60_000L : 0;
+            LoadInventory();
+            // «Обучение» только при совершенно чистом старте: ни доверенных, ни ранее замеченных устройств
+            _learningUntil = _known.Count == 0 && _devices.Count == 0 ? Clock() + S.LearningMinutes * 60_000L : 0;
         }
         if (autoPoll) _timer = new Timer(_ => SafePoll(), null, 500, 15_000);
         else _timer = new Timer(_ => { }, null, Timeout.Infinite, Timeout.Infinite);
@@ -59,6 +64,48 @@ public sealed class LanDeviceMonitor : IDisposable
         _timer = null;
         t?.Dispose();
         SaveKnown();
+        SaveInventory(force: true);
+    }
+
+    // ───────────── Сохранение таблицы устройств между запусками ─────────────
+
+    private void LoadInventory()
+    {
+        _devices.Clear();
+        var cutoff = DateTime.Now - InventoryTtl;
+        foreach (var r in SettingsService.Current.SeenDevices)
+        {
+            if (string.IsNullOrEmpty(r.Mac) || r.LastSeen < cutoff) continue;
+            var d = new LanDevice
+            {
+                Mac = r.Mac, FirstSeen = r.FirstSeen, Ip = r.Ip, Name = r.Name, LastSeen = r.LastSeen,
+                IsOnline = false, IsKnown = _known.Contains(r.Mac)
+            };
+            d.NamePriority = r.NamePriority;
+            foreach (var h in r.Hints) d.HintSet.Add(h);
+            Reclassify(d);
+            _devices[r.Mac] = d;
+        }
+        if (_devices.Count > 0) _ = Task.Run(() => Updated?.Invoke(Snapshot()));
+    }
+
+    private void SaveInventory(bool force)
+    {
+        List<SeenDevice> list;
+        lock (_lock)
+        {
+            if (!force && (!_inventoryDirty || Clock() - _lastInventorySave < 60_000)) return;
+            if (_devices.Count == 0 && !_inventoryDirty) return;
+            _inventoryDirty = false;
+            _lastInventorySave = Clock();
+            list = _devices.Values.OrderByDescending(d => d.LastSeen).Take(500).Select(d => new SeenDevice
+            {
+                Mac = d.Mac, Ip = d.Ip, Name = d.Name, NamePriority = d.NamePriority,
+                FirstSeen = d.FirstSeen, LastSeen = d.LastSeen, Hints = d.HintSet.ToList()
+            }).ToList();
+        }
+        SettingsService.Current.SeenDevices = list;
+        SettingsService.Save();
     }
 
     public void Dispose() => Stop();
@@ -91,6 +138,7 @@ public sealed class LanDeviceMonitor : IDisposable
             }
             ApplyHint(d, h);
             Reclassify(d);
+            _inventoryDirty = true;
         }
     }
 
@@ -120,6 +168,39 @@ public sealed class LanDeviceMonitor : IDisposable
         d.Vendor = OuiDatabase.Lookup(d.Mac);
         d.DeviceType = DeviceClassifier.Guess(d.Vendor, d.Name, d.HintSet.Select(x => x), d.IsGateway, d.IsRandomMac);
         d.HintsText = string.Join("; ", d.HintSet.Take(6));
+    }
+
+    /// <summary>Своё имя устройству (по MAC): имеет приоритет над именами из DHCP/mDNS/DNS и сохраняется между запусками.</summary>
+    public void Rename(string mac, string name)
+    {
+        name = name.Trim();
+        lock (_lock)
+        {
+            if (!_devices.TryGetValue(mac, out var d)) return;
+            d.Name = name;
+            d.NamePriority = name.Length == 0 ? 0 : 100;
+            Reclassify(d);
+            _inventoryDirty = true;
+        }
+        SaveInventory(force: true);
+        Updated?.Invoke(Snapshot());
+    }
+
+    /// <summary>Имя, заданное пользователем устройству с этим IP (null — не задано).</summary>
+    public string? UserNameByIp(string ip)
+    {
+        lock (_lock)
+        {
+            var d = _devices.Values.FirstOrDefault(x => x.Ip == ip && x.NamePriority >= 100 && x.Name.Length > 0);
+            return d?.Name;
+        }
+    }
+
+    /// <summary>Все устройства с заданными пользователем именами.</summary>
+    public List<(string Ip, string Name, string Mac)> UserNamed()
+    {
+        lock (_lock)
+            return _devices.Values.Where(x => x.NamePriority >= 100 && x.Name.Length > 0).Select(x => (x.Ip, x.Name, x.Mac)).ToList();
     }
 
     /// <summary>Доверие и описание устройства по IP (для детектора подключений из LAN): null — устройство ещё не известно.</summary>
@@ -198,6 +279,8 @@ public sealed class LanDeviceMonitor : IDisposable
         if (S.Enabled)
             foreach (var (sev, title, msg) in alerts) _notify.RaiseExternal(sev, title, msg);
         foreach (var d in created) _ = ResolveNameAsync(d);
+        _inventoryDirty = true;
+        SaveInventory(force: created.Count > 0);
         Updated?.Invoke(Snapshot());
     }
 

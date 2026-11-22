@@ -141,13 +141,29 @@ public sealed partial class ShareAccessViewModel : ObservableObject, IDisposable
                 break;
             case ShareAccessMonitor.AuditState.Off:
                 AuditOk = false;
-                AuditText = "Аудит выключен: видны только текущие сессии и открытые файлы. Включите аудит для истории и отказов.";
+                AuditText = "⚠ Аудит доступа к шарам выключен в Windows: видны только текущие сессии и открытые файлы — быстрые обращения, скачивания и отказы НЕ фиксируются. Нажмите «Включить аудит».";
                 break;
             default:
                 AuditOk = false;
                 AuditText = "Состояние аудита неизвестно (нужны права администратора).";
                 break;
         }
+    }
+
+    private bool _historyLoaded;
+
+    /// <summary>Запуск вместе с программой — всегда; ручная остановка действует только до перезапуска.</summary>
+    public void StartAuto()
+    {
+        if (!IsRunning) StartMonitoring();
+    }
+
+    private void StartMonitoring()
+    {
+        RefreshAuditState();
+        _monitor.Start();
+        IsRunning = true;
+        LoadHistoryOnce();
     }
 
     [RelayCommand]
@@ -160,10 +176,101 @@ public sealed partial class ShareAccessViewModel : ObservableObject, IDisposable
         }
         else
         {
-            RefreshAuditState();
-            _monitor.Start();
-            IsRunning = true;
+            StartMonitoring();
         }
+    }
+
+    // ───────────── История: журнал не пропадает при перезапуске ─────────────
+
+    /// <summary>Подгружает прошлые события: сохранённый share-access.csv и журнал безопасности Windows (если аудит был включён). Без уведомлений.</summary>
+    private void LoadHistoryOnce()
+    {
+        if (_historyLoaded) return;
+        _historyLoaded = true;
+        System.Threading.Tasks.Task.Run(() =>
+        {
+            var history = new System.Collections.Generic.List<ShareAccessEvent>();
+            try { history.AddRange(ReadCsvHistory(_logPath, 1500)); } catch { }
+            try { history.AddRange(_monitor.LoadHistory(TimeSpan.FromDays(3), 1500)); } catch { }
+            _dispatcher.BeginInvoke(() => MergeHistory(history));
+        });
+    }
+
+    private void MergeHistory(System.Collections.Generic.List<ShareAccessEvent> history)
+    {
+        if (history.Count == 0) return;
+        var seen = new System.Collections.Generic.HashSet<string>();
+        var merged = Events.Concat(history)
+            .OrderByDescending(e => e.Timestamp)
+            .Where(e => seen.Add(HistoryKey(e)))
+            .Take(Events.Limit)
+            .ToList();
+        Events.Clear();
+        Events.AddBatch(merged);
+
+        TotalEvents = Events.Count;
+        DeniedEvents = Events.Count(e => e.Denied);
+        _clients.Clear();
+        foreach (var e in Events) if (!string.IsNullOrEmpty(e.Client)) _clients.Add(e.Client);
+        ClientCount = _clients.Count;
+    }
+
+    private static string HistoryKey(ShareAccessEvent e) =>
+        $"{e.Timestamp:yyyyMMddHHmmss}|{e.Kind}|{e.Client}|{e.User}|{e.Share}|{e.Path}|{e.Access}|{e.Denied}";
+
+    /// <summary>Читает последние строки share-access.csv (формат — как в <see cref="WriteLog"/>).</summary>
+    public static System.Collections.Generic.List<ShareAccessEvent> ReadCsvHistory(string path, int max)
+    {
+        var result = new System.Collections.Generic.List<ShareAccessEvent>();
+        if (!File.Exists(path)) return result;
+
+        var tail = new System.Collections.Generic.Queue<string>(max + 1);
+        using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+        using (var sr = new StreamReader(fs, Encoding.UTF8))
+        {
+            string? line;
+            while ((line = sr.ReadLine()) is not null)
+            {
+                if (line.Length == 0 || line.StartsWith("timestamp,", StringComparison.Ordinal)) continue;
+                tail.Enqueue(line);
+                if (tail.Count > max) tail.Dequeue();
+            }
+        }
+
+        foreach (var line in tail)
+        {
+            var f = SplitCsv(line);
+            if (f.Count < 11 || !DateTime.TryParse(f[0], CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var ts)) continue;
+            if (!Enum.TryParse<ShareEventKind>(f[1], out var kind)) continue;
+            result.Add(new ShareAccessEvent
+            {
+                Timestamp = ts.ToLocalTime(), Kind = kind, Source = f[2], Client = f[3], ClientPort = f[4], User = f[5],
+                Share = f[6], Path = f[7], Access = f[8], Denied = f[9] != "OK", Via = f[10]
+            });
+        }
+        return result;
+    }
+
+    private static System.Collections.Generic.List<string> SplitCsv(string line)
+    {
+        var fields = new System.Collections.Generic.List<string>();
+        var sb = new StringBuilder();
+        bool quoted = false;
+        for (int i = 0; i < line.Length; i++)
+        {
+            char c = line[i];
+            if (quoted)
+            {
+                if (c == '"' && i + 1 < line.Length && line[i + 1] == '"') { sb.Append('"'); i++; }
+                else if (c == '"') quoted = false;
+                else sb.Append(c);
+            }
+            else if (c == '"') quoted = true;
+            else if (c == ',') { fields.Add(sb.ToString()); sb.Clear(); }
+            else sb.Append(c);
+        }
+        fields.Add(sb.ToString());
+        return fields;
     }
 
     [RelayCommand]

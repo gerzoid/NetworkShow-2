@@ -40,6 +40,10 @@ public sealed partial class ConnectionAggregate : ObservableObject
     [ObservableProperty]
     private string remoteHost = string.Empty;
 
+    /// <summary>Своё имя адреса, заданное пользователем.</summary>
+    [ObservableProperty]
+    private string alias = string.Empty;
+
     [ObservableProperty]
     private string sni = string.Empty;
 

@@ -18,11 +18,23 @@ public sealed class AppSettings
     public List<string> KnownProcesses { get; set; } = new();
     /// <summary>Доверенные устройства локальной сети (по MAC) — всё остальное считается новым.</summary>
     public List<KnownDevice> KnownDevices { get; set; } = new();
+    /// <summary>Все когда-либо замеченные устройства сети (таблица «Устройства (ARP)» не строится заново после перезапуска).</summary>
+    public List<SeenDevice> SeenDevices { get; set; } = new();
+    /// <summary>Свои имена IP-адресов: IP → имя.</summary>
+    public Dictionary<string, string> IpAliases { get; set; } = new();
     public string LogFormat { get; set; } = "Json";
     public string ProtocolFilter { get; set; } = "All";
     public string ScopeFilter { get; set; } = "Все";
     public string Grouping { get; set; } = "Без группировки";
     public bool HideUnknownProcess { get; set; }
+    /// <summary>Запускать вместе с Windows (задание планировщика с правами администратора).</summary>
+    public bool AutostartWithWindows { get; set; }
+    /// <summary>При запуске из автозапуска сразу сворачивать в трей.</summary>
+    public bool StartMinimizedOnAutostart { get; set; } = true;
+    /// <summary>Начинать захват при каждом запуске программы.</summary>
+    public bool AutoStartCapture { get; set; }
+    /// <summary>Хранить логи не дольше стольких дней (0 — не удалять).</summary>
+    public int LogRetentionDays { get; set; } = 30;
     public List<string> Blacklist { get; set; } = new();
     public List<string> Whitelist { get; set; } = new();
     public double WindowLeft { get; set; } = double.NaN;
@@ -30,6 +42,17 @@ public sealed class AppSettings
     public double WindowWidth { get; set; }
     public double WindowHeight { get; set; }
     public bool WindowMaximized { get; set; }
+}
+
+public sealed class SeenDevice
+{
+    public string Mac { get; set; } = string.Empty;
+    public string Ip { get; set; } = string.Empty;
+    public string Name { get; set; } = string.Empty;
+    public int NamePriority { get; set; }
+    public DateTime FirstSeen { get; set; }
+    public DateTime LastSeen { get; set; }
+    public List<string> Hints { get; set; } = new();
 }
 
 public sealed class KnownDevice

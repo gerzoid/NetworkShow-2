@@ -180,6 +180,88 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     public ObservableCollection<Axis> SpeedYAxes { get; }
 
     // ───── График скорости: фильтр по приложению и протоколу ─────
+    // ───── Автозапуск и хранение данных ─────
+    public string[] RetentionOptions { get; } = { "Не удалять", "7 дней", "30 дней", "90 дней" };
+
+    [ObservableProperty] private bool autostartWithWindows;
+    [ObservableProperty] private bool startMinimized = true;
+    [ObservableProperty] private bool autoStartCapture;
+    [ObservableProperty] private string logRetention = "30 дней";
+
+    private bool _applyingSettings;
+    private DateTime _lastRetentionRun = DateTime.MinValue;
+
+    partial void OnAutostartWithWindowsChanged(bool value)
+    {
+        if (_applyingSettings) return;
+        var (ok, message) = value ? AutostartService.Enable() : AutostartService.Disable();
+        StatusText = message;
+        if (!ok)
+        {
+            // Не вышло (нет прав и т. п.) — возвращаем переключатель, не сохраняя
+            _applyingSettings = true;
+            AutostartWithWindows = !value;
+            _applyingSettings = false;
+            return;
+        }
+        SettingsService.Current.AutostartWithWindows = value;
+        SettingsService.Save();
+    }
+
+    partial void OnStartMinimizedChanged(bool value) { SettingsService.Current.StartMinimizedOnAutostart = value; if (!_applyingSettings) SettingsService.Save(); }
+    partial void OnAutoStartCaptureChanged(bool value) { SettingsService.Current.AutoStartCapture = value; if (!_applyingSettings) SettingsService.Save(); }
+
+    partial void OnLogRetentionChanged(string value)
+    {
+        SettingsService.Current.LogRetentionDays = RetentionDays(value);
+        if (_applyingSettings) return;
+        SettingsService.Save();
+        _lastRetentionRun = DateTime.MinValue;
+        Task.Run(RunRetention);
+    }
+
+    private static int RetentionDays(string option) => option switch { "7 дней" => 7, "30 дней" => 30, "90 дней" => 90, _ => 0 };
+    private static string RetentionOption(int days) => days switch { 7 => "7 дней", 30 => "30 дней", 90 => "90 дней", 0 => "Не удалять", _ => "30 дней" };
+
+    /// <summary>Удаляет с диска данные старше срока хранения (логи, журнал уведомлений, экспорты). Не чаще раза в 12 часов.</summary>
+    private void RunRetention()
+    {
+        int days = SettingsService.Current.LogRetentionDays;
+        if (days <= 0 || DateTime.Now - _lastRetentionRun < TimeSpan.FromHours(12)) return;
+        _lastRetentionRun = DateTime.Now;
+        try
+        {
+            var r = DataCleanupService.Execute(DataCleanupService.DefaultDir, TimeSpan.FromDays(days), CleanupKinds.All);
+            if (r.Files > 0 || r.NotificationLines > 0)
+                _dispatcher.BeginInvoke(() => StatusText = $"Автоочистка: удалено файлов {r.Files} ({ByteFormatter.Format(r.Bytes)}), строк журнала {r.NotificationLines} (старше {days} дн.).");
+        }
+        catch { }
+    }
+
+    /// <summary>Сколько соединений и уведомлений в памяти попадёт под очистку (для окна «Очистка данных»).</summary>
+    public (int Connections, int Notifications) PreviewMemoryCleanup(TimeSpan? olderThan)
+    {
+        var ttl = olderThan ?? TimeSpan.Zero;
+        int conns = _aggregation.CountInactive(ttl);
+        var cutoff = DateTime.Now - ttl;
+        int notes = olderThan is null ? _notificationItems.Count : _notificationItems.Count(n => n.Timestamp < cutoff);
+        return (conns, notes);
+    }
+
+    /// <summary>Убирает из памяти неактивные соединения и/или уведомления старше периода (null — все).</summary>
+    public void CleanMemory(TimeSpan? olderThan, bool connections, bool notifications)
+    {
+        var ttl = olderThan ?? TimeSpan.Zero;
+        if (connections) _aggregation.Prune(ttl);
+        if (notifications)
+        {
+            var cutoff = DateTime.Now - ttl;
+            for (int i = _notificationItems.Count - 1; i >= 0; i--)
+                if (olderThan is null || _notificationItems[i].Timestamp < cutoff) _notificationItems.RemoveAt(i);
+            UnreadAlerts = 0;
+        }
+    }
+
     public ObservableCollection<string> ChartProcessOptions { get; } = new() { "Все" };
     public string[] ChartProtocolOptions { get; } = { "Все", "TCP", "UDP", "ICMP", "Другие" };
 
@@ -230,6 +312,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     public ShareAccessViewModel ShareAccess { get; }
     public AnalyticsViewModel Analytics { get; }
     public LanDevicesViewModel LanDevices { get; }
+    public IpNamesViewModel IpNames { get; }
     private readonly LanDeviceMonitor _lanMonitor;
 
     private int _chartOptionsCounter;
@@ -250,6 +333,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _anomaly.LanLookup = _lanMonitor.LookupByIp;
         _captureService.DeviceHintFound += _lanMonitor.AddHint;
         LanDevices = new LanDevicesViewModel(_lanMonitor, msg => StatusText = msg, _dispatcher);
+        IpAliasService.Load(SettingsService.Current.IpAliases);
+        IpAliasService.LanNameLookup = _lanMonitor.UserNameByIp;
+        IpNames = new IpNamesViewModel(() => _lanMonitor.UserNamed(), (ip, name) => SetIpAlias(ip, name), msg => StatusText = msg);
+        LanDevices.Renamed = () => { RefreshAliases(); IpNames.Reload(); };
         _logonMonitor = new LogonMonitor(_notifications);
         _dnsMonitor = new DnsMonitorService(_processResolver);
         _dnsMonitor.StatusChanged += msg => _dispatcher.BeginInvoke(() => StatusText = msg);
@@ -270,6 +357,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _dns.Resolved += OnDnsResolved;
         ShareAccess = new ShareAccessViewModel();
         ShareAccess.Alert += OnNotificationRaised;
+        // Мониторинг шар всегда стартует вместе с программой (кнопка на вкладке останавливает его только до следующего запуска)
+        ShareAccess.StartAuto();
 
         ConnectionsView = CollectionViewSource.GetDefaultView(Connections);
         ConnectionsView.Filter = FilterConnection;
@@ -277,6 +366,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
         RemoteIpsView = CollectionViewSource.GetDefaultView(RemoteIps);
         NotificationsView = CollectionViewSource.GetDefaultView(_notificationItems);
+        // Журнал уведомлений не пропадает при перезапуске: восстанавливаем последние записи из notifications.log
+        foreach (var n in NotificationLogReader.ReadRecent(System.IO.Path.Combine(DataCleanupService.DefaultDir, "notifications.log"), 200))
+            _notificationItems.Add(n);
         NotificationsView.Filter = o => !OnlyImportantAlerts || o is not TrafficNotification { Severity: NotificationSeverity.Info };
         RemoteIpsView.SortDescriptions.Add(new SortDescription(nameof(RemoteIpAggregate.Bytes), ListSortDirection.Descending));
 
@@ -358,12 +450,27 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             _aggregation.Prune(ConnectionInactivityTimeout);
             _dns.Prune();
             _notifications.Prune(TimeSpan.FromHours(24));
+            RunRetention();
         }, null, PruneInterval, PruneInterval);
+
+        // Автозапуск: привести задание планировщика в порядок (путь мог измениться), и сразу применить срок хранения
+        var desiredAutostart = SettingsService.Current.AutostartWithWindows;
+        Task.Run(() => { AutostartService.Reconcile(desiredAutostart); RunRetention(); });
+
+        // Начинать захват при запуске программы (после того как окно и сервисы готовы)
+        if (SettingsService.Current.AutoStartCapture)
+            _dispatcher.BeginInvoke(() => { if (!IsCapturing && SelectedInterface is not null) Start(); }, DispatcherPriority.Background);
     }
 
     private void ApplySavedSettings()
     {
         var s = SettingsService.Current;
+        _applyingSettings = true;
+        AutostartWithWindows = s.AutostartWithWindows;
+        StartMinimized = s.StartMinimizedOnAutostart;
+        AutoStartCapture = s.AutoStartCapture;
+        LogRetention = RetentionOption(s.LogRetentionDays);
+        _applyingSettings = false;
         foreach (var entry in s.Blacklist)
         {
             _notifications.AddToBlacklist(entry);
@@ -540,6 +647,21 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     [RelayCommand]
     private void AddWhitelist() => AddIpToWhitelist(IpFilter);
+
+    /// <summary>Задаёт (или с пустым именем удаляет) своё имя IP-адреса и обновляет все таблицы.</summary>
+    public void SetIpAlias(string ip, string? name)
+    {
+        IpAliasService.Set(ip, name);
+        RefreshAliases();
+        IpNames.Reload();
+        StatusText = string.IsNullOrWhiteSpace(name) ? $"Имя адреса {ip} удалено." : $"Адрес {ip} назван «{name.Trim()}».";
+    }
+
+    private void RefreshAliases()
+    {
+        foreach (var c in _aggregation.Connections) c.Alias = IpAliasService.Resolve(c.RemoteIp);
+        foreach (var ip in _aggregation.RemoteIps) ip.Alias = IpAliasService.Resolve(ip.Ip);
+    }
 
     public void AddIpToBlacklist(string entry)
     {
@@ -837,7 +959,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         var fresh = new List<TopEntry>(10);
         foreach (var t in _aggregation.TopIps(10))
         {
-            var label = string.IsNullOrEmpty(t.RemoteHost) || t.RemoteHost == t.Ip ? t.Ip : t.RemoteHost;
+            var label = !string.IsNullOrEmpty(t.Alias) ? t.Alias : string.IsNullOrEmpty(t.RemoteHost) || t.RemoteHost == t.Ip ? t.Ip : t.RemoteHost;
             fresh.Add(new TopEntry { Key = label, Bytes = t.Bytes, Display = ByteFormatter.Format(t.Bytes) });
         }
         SyncTopList(TopIps, fresh);
@@ -908,6 +1030,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         {
             var s = SearchText.Trim();
             if (!c.LocalIp.Contains(s, StringComparison.OrdinalIgnoreCase) &&
+                !c.Alias.Contains(s, StringComparison.OrdinalIgnoreCase) &&
                 !c.RemoteIp.Contains(s, StringComparison.OrdinalIgnoreCase) &&
                 !c.RemoteHost.Contains(s, StringComparison.OrdinalIgnoreCase) &&
                 !c.Sni.Contains(s, StringComparison.OrdinalIgnoreCase) &&

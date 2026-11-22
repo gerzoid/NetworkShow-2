@@ -130,6 +130,7 @@ public sealed class AggregationService
                 Protocol = r.Protocol,
                 Service = PortServiceCatalog.LookupPair(r.Protocol, localPort, remotePort),
                 RemoteScope = IpClassifier.Classify(remoteIp),
+                Alias = IpAliasService.Resolve(remoteIp),
                 ProcessName = r.ProcessName,
                 ProcessId = r.ProcessId,
                 FirstSeen = r.Timestamp,
@@ -166,6 +167,7 @@ public sealed class AggregationService
             var fresh = new RemoteIpAggregate
             {
                 Ip = remoteIp,
+                Alias = IpAliasService.Resolve(remoteIp),
                 Scope = IpClassifier.Classify(remoteIp),
                 FirstSeen = r.Timestamp,
                 LastSeen = r.Timestamp,
@@ -223,6 +225,15 @@ public sealed class AggregationService
         long bIn = Interlocked.Exchange(ref _intervalIn, 0);
         long bOut = Interlocked.Exchange(ref _intervalOut, 0);
         return (bIn, bOut);
+    }
+
+    /// <summary>Сколько соединений неактивны дольше <paramref name="ttl"/> (для предпросмотра очистки).</summary>
+    public int CountInactive(TimeSpan ttl)
+    {
+        var cutoff = DateTime.Now - ttl;
+        int n = 0;
+        foreach (var kv in _connections) if (kv.Value.LiveLastSeen < cutoff) n++;
+        return n;
     }
 
     public IReadOnlyList<RemoteIpAggregate> TopIps(int count) =>

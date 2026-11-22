@@ -92,6 +92,7 @@ public class DeviceIdentificationTests
     {
         SettingsService.Persist = false;
         SettingsService.Current.Detection = new DetectionSettings();
+        SettingsService.Current.SeenDevices = new();
         SettingsService.Current.KnownDevices = new() { new() { Mac = "50-FF-20-ED-2C-A5" } };
         using var mon = new LanDeviceMonitor(new NotificationService())
         {
