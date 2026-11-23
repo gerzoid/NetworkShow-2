@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
@@ -220,6 +220,14 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         Task.Run(RunRetention);
     }
 
+    /// <summary>Записывает потоки в историю (SQLite): раз в 2 минуты и при выходе.</summary>
+    private void FlushHistory(bool force = false)
+    {
+        if (!force && Environment.TickCount64 - _lastHistoryFlush < 120_000) return;
+        _lastHistoryFlush = Environment.TickCount64;
+        try { _history.SaveFlows(_aggregation.Connections.ToList()); } catch { }
+    }
+
     private static int RetentionDays(string option) => option switch { "7 дней" => 7, "30 дней" => 30, "90 дней" => 90, _ => 0 };
     private static string RetentionOption(int days) => days switch { 7 => "7 дней", 30 => "30 дней", 90 => "90 дней", 0 => "Не удалять", _ => "30 дней" };
 
@@ -232,6 +240,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         try
         {
             var r = DataCleanupService.Execute(DataCleanupService.DefaultDir, TimeSpan.FromDays(days), CleanupKinds.All);
+            try { _history.Purge(DateTime.Now.AddDays(-Math.Max(days, 90))); } catch { }
             if (r.Files > 0 || r.NotificationLines > 0)
                 _dispatcher.BeginInvoke(() => StatusText = $"Автоочистка: удалено файлов {r.Files} ({ByteFormatter.Format(r.Bytes)}), строк журнала {r.NotificationLines} (старше {days} дн.).");
         }
@@ -314,6 +323,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     public LanDevicesViewModel LanDevices { get; }
     public IpNamesViewModel IpNames { get; }
     private readonly LanDeviceMonitor _lanMonitor;
+    private readonly LanAttackDetector _lanAttack;
+    private readonly HistoryStore _history = new();
+    public HistoryViewModel History { get; }
+    private long _lastHistoryFlush;
 
     private int _chartOptionsCounter;
     private readonly ObservableCollection<DateTimePoint> _speedInPoints = new();
@@ -332,11 +345,19 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _lanMonitor = new LanDeviceMonitor(_notifications);
         _anomaly.LanLookup = _lanMonitor.LookupByIp;
         _captureService.DeviceHintFound += _lanMonitor.AddHint;
+        _lanAttack = new LanAttackDetector(_notifications);
+        _captureService.ArpFrameSeen += _lanAttack.OnArp;
+        _captureService.DhcpServerSeen += _lanAttack.OnDhcpServer;
+        _captureService.NameResponseSeen += _lanAttack.OnNameResponse;
         LanDevices = new LanDevicesViewModel(_lanMonitor, msg => StatusText = msg, _dispatcher);
+        GeoIpDatabase.PreloadAsync();
+        Task.Run(() => { try { _history.Open(); } catch (Exception ex) { _dispatcher.BeginInvoke(() => StatusText = "История недоступна: " + ex.Message); } });
         IpAliasService.Load(SettingsService.Current.IpAliases);
         IpAliasService.LanNameLookup = _lanMonitor.UserNameByIp;
         IpNames = new IpNamesViewModel(() => _lanMonitor.UserNamed(), (ip, name) => SetIpAlias(ip, name), msg => StatusText = msg);
         LanDevices.Renamed = () => { RefreshAliases(); IpNames.Reload(); };
+        History = new HistoryViewModel(_history, msg => StatusText = msg);
+        History.BeforeQuery = () => FlushHistory(true);
         _logonMonitor = new LogonMonitor(_notifications);
         _dnsMonitor = new DnsMonitorService(_processResolver);
         _dnsMonitor.StatusChanged += msg => _dispatcher.BeginInvoke(() => StatusText = msg);
@@ -451,6 +472,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             _dns.Prune();
             _notifications.Prune(TimeSpan.FromHours(24));
             RunRetention();
+            FlushHistory();
         }, null, PruneInterval, PruneInterval);
 
         // Автозапуск: привести задание планировщика в порядок (путь мог измениться), и сразу применить срок хранения
@@ -867,6 +889,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             if (n.Severity != NotificationSeverity.Info && !_notificationsTabActive) UnreadAlerts++;
             while (_notificationItems.Count > 200) _notificationItems.RemoveAt(_notificationItems.Count - 1);
             try { _logging.WriteNotification(n); } catch { }
+            Task.Run(() => { try { _history.SaveEvent(n); } catch { } });
         });
     }
 
@@ -1153,6 +1176,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             if (_pruneTimer.Dispose(wh)) wh.WaitOne(1000);
         }
         Stop();
+        FlushHistory(true);
+        _history.Dispose();
         _anomaly.Dispose();
         _lanMonitor.Dispose();
         Analytics.Dispose();

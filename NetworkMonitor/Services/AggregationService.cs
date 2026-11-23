@@ -146,6 +146,15 @@ public sealed class AggregationService
         if (isOutbound) conn.LiveBytesOut += r.Size;
         else conn.LiveBytesIn += r.Size;
         conn.LiveLastSeen = r.Timestamp;
+        UpdateFlow(conn, r, isOutbound);
+        if (!conn.GeoDone && conn.RemoteScope == IpScope.Public && GeoIpDatabase.IsLoaded)
+        {
+            var (cc, asn) = GeoIpDatabase.Lookup(conn.RemoteIp);
+            conn.Country = cc;
+            conn.AsnText = asn;
+            conn.GeoDone = true;
+            if (conn.Category.Length == 0) conn.Category = DomainCategories.FromAsnOrg(asn);
+        }
         if (IsWeakName(conn.ProcessName) && IsStrongName(r.ProcessName))
         {
             conn.ProcessName = r.ProcessName;
@@ -206,6 +215,67 @@ public sealed class AggregationService
         {
             if (isOutbound) Interlocked.Add(ref _filteredOut, r.Size);
             else Interlocked.Add(ref _filteredIn, r.Size);
+        }
+    }
+
+    private const double TicksPerMs = TimeSpan.TicksPerMillisecond;
+
+    /// <summary>Метрики потока и качества сети по каждому пакету: интервалы, RTT рукопожатия, повторы, сбросы, протокол по содержимому, JA3.</summary>
+    internal static void UpdateFlow(ConnectionAggregate c, PacketRecord r, bool outbound)
+    {
+        long ticks = r.Timestamp.Ticks;
+        if (c.LastPacketTicks > 0 && ticks >= c.LastPacketTicks)
+        {
+            double dt = (ticks - c.LastPacketTicks) / TicksPerMs;
+            c.LiveIatCount++;
+            double d = dt - c.LiveIatMean;
+            c.LiveIatMean += d / c.LiveIatCount;
+            c.LiveIatM2 += d * (dt - c.LiveIatMean);
+        }
+        c.LastPacketTicks = ticks;
+
+        if (!string.IsNullOrEmpty(r.AppProto) && (c.AppProto.Length == 0 || (c.AppProto == ProtocolSniffer.Tls && r.AppProto != ProtocolSniffer.Tls)))
+            c.AppProto = r.AppProto;
+        if (!string.IsNullOrEmpty(r.Ja3) && c.Ja3.Length == 0) c.Ja3 = r.Ja3;
+
+        if (r.Protocol != "TCP") return;
+
+        byte f = r.TcpFlags;
+        if ((f & 0x04) != 0) c.LiveResets++;
+
+        // RTT рукопожатия: исходящий SYN → входящий SYN/ACK (мы клиент) или исходящий SYN/ACK → входящий ACK (мы сервер)
+        if (c.LiveRttMs == 0)
+        {
+            bool syn = (f & 0x02) != 0, ack = (f & 0x10) != 0;
+            if (syn && !ack && outbound) c.SynOutTicks = ticks;
+            else if (syn && ack && !outbound && c.SynOutTicks > 0) c.LiveRttMs = Math.Max(0.1, (ticks - c.SynOutTicks) / TicksPerMs);
+            else if (syn && ack && outbound) c.SynAckOutTicks = ticks;
+            else if (!syn && ack && !outbound && c.SynAckOutTicks > 0 && r.PayloadLength == 0)
+                c.LiveRttMs = Math.Max(0.1, (ticks - c.SynAckOutTicks) / TicksPerMs);
+        }
+
+        // Повторная передача: сегмент начинается раньше, чем кончился уже виденный в этом направлении
+        if (r.PayloadLength > 0)
+        {
+            uint end = r.TcpSeq + (uint)r.PayloadLength;
+            if (outbound)
+            {
+                if (!c.HasSeqOut) { c.HasSeqOut = true; c.HighSeqOut = end; }
+                else
+                {
+                    if ((int)(r.TcpSeq - c.HighSeqOut) < 0) c.LiveRetransmits++;
+                    if ((int)(end - c.HighSeqOut) > 0) c.HighSeqOut = end;
+                }
+            }
+            else
+            {
+                if (!c.HasSeqIn) { c.HasSeqIn = true; c.HighSeqIn = end; }
+                else
+                {
+                    if ((int)(r.TcpSeq - c.HighSeqIn) < 0) c.LiveRetransmits++;
+                    if ((int)(end - c.HighSeqIn) > 0) c.HighSeqIn = end;
+                }
+            }
         }
     }
 

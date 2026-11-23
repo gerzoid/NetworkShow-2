@@ -102,6 +102,7 @@ public sealed partial class AnalyticsViewModel : ObservableObject, IDisposable
         else if (SelectedTabIndex == 3 && SelectedZone is null) SelectedZone = z.FirstOrDefault();
         else if (SelectedTabIndex == 4 && SelectedCategory is null) SelectedCategory = cat.FirstOrDefault();
 
+        RefreshExtra(conns);
         long total = conns.Sum(c => c.Bytes);
         Summary = $"Соединений: {conns.Count} · объём: {ByteFormatter.Format(total)} · " +
                   $"протоколов: {p.Count} · процессов: {pr.Count} · зон: {z.Count}" + (SitesEnabled ? $" · сайтов: {s.Count}" : string.Empty);
@@ -116,7 +117,8 @@ public sealed partial class AnalyticsViewModel : ObservableObject, IDisposable
             1 => SelectedSite,
             2 => SelectedProcess,
             3 => SelectedZone,
-            _ => SelectedCategory
+            4 => SelectedCategory,
+            _ => ExtraRow(SelectedTabIndex)
         };
         Details = row?.Items ?? (IReadOnlyList<ConnectionAggregate>)Array.Empty<ConnectionAggregate>();
         DetailTitle = row is null

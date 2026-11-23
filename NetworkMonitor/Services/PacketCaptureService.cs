@@ -45,6 +45,9 @@ public sealed class PacketCaptureService : IDisposable
     public bool ParseDeviceHints { get => _parseDeviceHints; set => _parseDeviceHints = value; }
 
     public event Action<DeviceHint>? DeviceHintFound;
+    public event Action<ArpFrame>? ArpFrameSeen;
+    public event Action<DhcpServerMessage>? DhcpServerSeen;
+    public event Action<NameResponse>? NameResponseSeen;
 
     private volatile bool _parseDnsPackets = true;
     /// <summary>Разбирать DNS-запросы из пакетов (false, пока работает ETW-мониторинг DNS — он точнее и даёт процесс).</summary>
@@ -173,13 +176,26 @@ public sealed class PacketCaptureService : IDisposable
             }
 
             var data = e.Data;
-            if (!PacketHeaderParser.TryParse(_linkType, data, out var h)) return;
+            if (!PacketHeaderParser.TryParse(_linkType, data, out var h))
+            {
+                // Не IP: ARP нужен детектору атак в локальной сети
+                if (_parseDeviceHints && _linkType == 1 && LanFrameParser.TryParseArp(data, out var arp)) ArpFrameSeen?.Invoke(arp);
+                return;
+            }
 
             string protocol;
             string? sni = null;
             string? dnsName = null;
+            string? appProto = null;
+            string? ja3 = null;
             bool wantHints = false;
             var payload = h.PayloadLength > 0 ? data.Slice(h.PayloadOffset, h.PayloadLength) : default;
+            if (payload.Length >= 4 && (h.IsTcp || h.IsUdp))
+            {
+                appProto = ProtocolSniffer.Detect(h.IsTcp, h.SourcePort, h.DestinationPort, payload);
+                if (h.IsTcp && ReferenceEquals(appProto, ProtocolSniffer.Tls) && payload[5] == 0x01 &&
+                    Ja3Fingerprint.TryCompute(payload, out var j3, out _)) ja3 = j3;
+            }
             if (h.IsTcp)
             {
                 protocol = "TCP";
@@ -203,6 +219,11 @@ public sealed class PacketCaptureService : IDisposable
             }
 
             var src = GetIpInfo(h.Source, data, isSource: true);
+            if (_parseDeviceHints && h.IsUdp && payload.Length > 16)
+            {
+                if (h.SourcePort == 67 && h.DestinationPort == 68 && LanFrameParser.TryParseDhcpServer(payload, src.Text, out var dhcp)) DhcpServerSeen?.Invoke(dhcp);
+                else if ((h.SourcePort == 5355 || h.SourcePort == 137) && LanFrameParser.TryParseNameResponse(h.SourcePort, payload, src.Text, out var nr)) NameResponseSeen?.Invoke(nr);
+            }
             if (wantHints)
                 foreach (var hint in DeviceHintParser.Parse(h.SourcePort, h.DestinationPort, payload, src.Text))
                     DeviceHintFound?.Invoke(hint);
@@ -210,7 +231,7 @@ public sealed class PacketCaptureService : IDisposable
             var direction = DetermineDirection(src.IsLocal, dst.IsLocal);
 
             Emit(e.Header.Timeval, src.Text, h.SourcePort, dst.Text, h.DestinationPort,
-                protocol, OriginalLength(e), direction, sni, h.TcpFlags, dnsName);
+                protocol, OriginalLength(e), direction, sni, h.TcpFlags, dnsName, h.TcpSeq, payload.Length, appProto, ja3);
         }
         catch
         {
@@ -278,7 +299,8 @@ public sealed class PacketCaptureService : IDisposable
     }
 
     private void Emit(PosixTimeval timeval, string srcIp, int srcPort, string dstIp, int dstPort,
-        string protocol, int size, TrafficDirection direction, string? sni, byte tcpFlags = 0, string? dnsName = null)
+        string protocol, int size, TrafficDirection direction, string? sni, byte tcpFlags = 0, string? dnsName = null,
+        uint tcpSeq = 0, int payloadLength = 0, string? appProto = null, string? ja3 = null)
     {
         var (pid, name) = (0, "unknown");
         if (protocol is "TCP" or "UDP")
@@ -298,7 +320,11 @@ public sealed class PacketCaptureService : IDisposable
             ProcessName = name,
             Sni = sni,
             TcpFlags = tcpFlags,
-            DnsName = dnsName
+            DnsName = dnsName,
+            TcpSeq = tcpSeq,
+            PayloadLength = payloadLength,
+            AppProto = appProto,
+            Ja3 = ja3
         };
 
         if (!_channel.Writer.TryWrite(record))

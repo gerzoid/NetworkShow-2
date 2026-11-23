@@ -25,11 +25,16 @@
   <ItemGroup>
     <!-- База производителей по MAC (IEEE OUI), без сети -->
     <EmbeddedResource Include="Resources\oui.txt.gz" LogicalName="oui.txt.gz" />
+    <!-- Страна и провайдер по IP: DB-IP.com IP-to-Country/ASN Lite (CC BY 4.0) -->
+    <EmbeddedResource Include="Resources\geoipdb.gz" LogicalName="geoipdb.gz" />
+    <!-- Отпечатки JA3 вредоносного ПО (abuse.ch SSLBL) -->
+    <EmbeddedResource Include="Resources\ja3_blocklist.csv" LogicalName="ja3_blocklist.csv" />
   </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
     <PackageReference Include="LiveChartsCore.SkiaSharpView.WPF" Version="2.0.5" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.11" />
     <PackageReference Include="PacketDotNet" Version="1.4.8" />
     <PackageReference Include="SharpPcap" Version="6.3.1" />
     <PackageReference Include="System.Management" Version="8.0.0" />

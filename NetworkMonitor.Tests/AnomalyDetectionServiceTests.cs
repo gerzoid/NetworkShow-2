@@ -217,4 +217,103 @@ public class AnomalyDetectionServiceTests : IDisposable
             _svc.Inspect(Pkt("1.2.3.4", 4000 + i, "192.168.1.10", 139, TrafficDirection.Inbound, flags: Syn));
         Assert.True(Has("Подозрение на подбор пароля"));
     }
+
+    private static NetworkMonitor.Helpers.TcpTableReader.Row Listen(string addr, int port, int pid) =>
+        new(System.Net.IPAddress.Parse(addr), port, System.Net.IPAddress.Any, 0, pid);
+
+    [Fact]
+    public void NewListeningPort_NamesTheOwningProcess()
+    {
+        var listeners = new List<(System.Net.IPAddress, int)> { (System.Net.IPAddress.Any, 445) };
+        _svc.ListenerSource = () => listeners.ToList();
+        _svc.TcpRows = () => new() { Listen("0.0.0.0", 445, 4), Listen("0.0.0.0", 5555, 4242) };
+        _svc.ProcessInfo = pid => pid == 4242 ? ("adb", @"C:\tools\platform-tools\adb.exe") : (null, null);
+
+        _svc.CheckListeners();                 // первый снимок — база без тревог
+        Assert.Empty(_events);
+
+        listeners.Add((System.Net.IPAddress.Any, 5555));
+        _svc.CheckListeners();
+        var n = Assert.Single(_events, e => e.Title == "Новый слушающий порт");
+        Assert.Contains("adb (PID 4242)", n.Message);
+        Assert.Contains(@"C:\tools\platform-tools\adb.exe", n.Message);
+        Assert.Contains("0.0.0.0:5555", n.Message);
+    }
+
+    [Fact]
+    public void NewListeningPort_OwnerGone_SaysSo()
+    {
+        var listeners = new List<(System.Net.IPAddress, int)>();
+        _svc.ListenerSource = () => listeners.ToList();
+        _svc.TcpRows = () => new();
+        _svc.CheckListeners();
+        listeners.Add((System.Net.IPAddress.Any, 6000));
+        _svc.CheckListeners();
+        var n = Assert.Single(_events, e => e.Title == "Новый слушающий порт");
+        Assert.Contains("владельца определить не удалось", n.Message);
+    }
+
+    [Fact]
+    public void SystemPid4_IsExplained()
+    {
+        var listeners = new List<(System.Net.IPAddress, int)>();
+        _svc.ListenerSource = () => listeners.ToList();
+        _svc.TcpRows = () => new() { Listen("0.0.0.0", 8080, 4) };
+        _svc.CheckListeners();
+        listeners.Add((System.Net.IPAddress.Any, 8080));
+        _svc.CheckListeners();
+        Assert.Contains(_events, e => e.Message.Contains("PID 4"));
+    }
+
+    private static PacketRecord App(string proto, int dport, string proc = "tool", string? sni = null, string? ja3 = null, string dst = "5.6.7.8", TrafficDirection dir = TrafficDirection.Outbound) => new()
+    {
+        Protocol = proto is "wireguard" or "openvpn" or "bittorrent" && dport != 80 ? "UDP" : "TCP",
+        Direction = dir, SourceIp = dir == TrafficDirection.Outbound ? "192.168.1.10" : dst, DestinationIp = dir == TrafficDirection.Outbound ? dst : "192.168.1.10",
+        SourcePort = dir == TrafficDirection.Outbound ? 50000 : dport, DestinationPort = dir == TrafficDirection.Outbound ? dport : 50000,
+        ProcessName = proc, AppProto = proto, Sni = sni, Ja3 = ja3
+    };
+
+    [Fact]
+    public void SshOnOddPort_Info_ButNotOnPort22()
+    {
+        _svc.Inspect(App("ssh", 22));
+        Assert.False(Has("SSH на нестандартном порту"));
+        _svc.Inspect(App("ssh", 2222));
+        Assert.Contains(_events, e => e.Title == "SSH на нестандартном порту" && e.Severity == NotificationSeverity.Info);
+    }
+
+    [Fact]
+    public void RdpOnOddPort_Warns_BitTorrentAndVpn_AreInfo()
+    {
+        _svc.Inspect(App("rdp", 8443));
+        Assert.Contains(_events, e => e.Title == "RDP на нестандартном порту" && e.Severity == NotificationSeverity.Warning);
+        _svc.Inspect(App("bittorrent", 6881, "qbittorrent"));
+        Assert.True(Has("Обнаружен трафик BitTorrent"));
+        _svc.Inspect(App("wireguard", 51820));
+        Assert.True(Has("VPN-протокол"));
+    }
+
+    [Fact]
+    public void Tor_Telnet_SmbToInternet_AreWarnings()
+    {
+        _svc.Inspect(App("tls", 9001, "tor", sni: "www.k3jd8s9fh2lq.com"));
+        Assert.True(Has("Похоже на трафик Tor"));
+        _svc.Inspect(App("telnet", 23));
+        Assert.True(Has("Telnet: данные открытым текстом"));
+        _svc.Inspect(App("smb", 445));
+        Assert.True(Has("SMB в интернет"));
+        _events.Clear();
+        _svc.Inspect(App("smb", 445, dst: "192.168.1.50"));
+        Assert.False(Has("SMB в интернет"));
+    }
+
+    [Fact]
+    public void KnownBadJa3_Warns()
+    {
+        _svc.Inspect(App("tls", 443, ja3: "b386946a5a44d1ddcc843bc75336dfce"));
+        Assert.Contains(_events, e => e.Title.StartsWith("TLS-отпечаток") && e.Message.Contains("Dridex"));
+        _events.Clear();
+        _svc.Inspect(App("tls", 443, ja3: "00000000000000000000000000000000"));
+        Assert.Empty(_events);
+    }
 }

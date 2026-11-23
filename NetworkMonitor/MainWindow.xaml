@@ -423,6 +423,9 @@
                             <DataGridTextColumn Header="Сервис" Binding="{Binding Service}" Width="90" />
                             <DataGridTextColumn Header="Приложение" Binding="{Binding AppLabel}" Width="120" />
                             <DataGridTextColumn Header="Удалённый" Binding="{Binding RemoteEndpoint}" Width="170" />
+                            <DataGridTextColumn Header="Протокол" Binding="{Binding AppProtoText, Mode=OneWay}" Width="75" />
+                            <DataGridTextColumn Header="Страна" Binding="{Binding Country, Mode=OneWay}" Width="60" />
+                            <DataGridTextColumn Header="Категория" Binding="{Binding Category, Mode=OneWay}" Width="140" />
                             <DataGridTextColumn x:Name="ConnAliasColumn" Header="Имя ✎" Binding="{Binding Alias, Mode=OneWay}" Width="130" />
                             <DataGridTextColumn x:Name="SniColumn" Header="SNI / Хост" Binding="{Binding SniOrHost}" Width="*" MinWidth="200" />
                             <DataGridTextColumn Header="Пакеты" Binding="{Binding Packets}" Width="80" />
@@ -590,6 +593,42 @@
                                         <DataGridTextColumn Header="Всего" Binding="{Binding Bytes, Converter={StaticResource BytesConverter}}" Width="100" />
                                         <DataGridTextColumn Header="Доля" Binding="{Binding ShareText}" Width="70" />
                                         <DataGridTextColumn Header="Последний" Binding="{Binding LastSeen, StringFormat=HH:mm:ss}" Width="90" />
+                                    </DataGrid.Columns>
+                                </DataGrid>
+                            </TabItem>
+                            <TabItem Header="Категории сайтов">                                 <DataGrid ItemsSource="{Binding SiteCategories}" SelectedItem="{Binding SelectedSiteCategory, Mode=TwoWay}" IsReadOnly="True" AutoGenerateColumns="False" ContextMenu="{StaticResource CellCopyMenu}" PreviewMouseRightButtonDown="CopyGrid_PreviewRightButtonDown">                                     <DataGrid.Columns>                                         <DataGridTextColumn Header="Категория" Binding="{Binding Name}" Width="*" />                                         <DataGridTextColumn Header="Основные процессы" Binding="{Binding Extra}" Width="240" />                                         <DataGridTextColumn Header="Соед." Binding="{Binding Connections}" Width="70" />                                         <DataGridTextColumn Header="Хостов" Binding="{Binding Hosts}" Width="70" />                                         <DataGridTextColumn Header="&#x2193;" Binding="{Binding BytesIn, Converter={StaticResource BytesConverter}}" Width="95" />                                         <DataGridTextColumn Header="&#x2191;" Binding="{Binding BytesOut, Converter={StaticResource BytesConverter}}" Width="95" />                                         <DataGridTextColumn Header="Всего" Binding="{Binding Bytes, Converter={StaticResource BytesConverter}}" Width="100" />                                         <DataGridTextColumn Header="Доля" Binding="{Binding ShareText}" Width="70" />                                     </DataGrid.Columns>                                 </DataGrid>                             </TabItem>
+                            <TabItem Header="Страны">                                 <DataGrid ItemsSource="{Binding Countries}" SelectedItem="{Binding SelectedCountry, Mode=TwoWay}" IsReadOnly="True" AutoGenerateColumns="False" ContextMenu="{StaticResource CellCopyMenu}" PreviewMouseRightButtonDown="CopyGrid_PreviewRightButtonDown">                                     <DataGrid.Columns>                                         <DataGridTextColumn Header="Страна" Binding="{Binding Name}" Width="*" />                                         <DataGridTextColumn Header="Основные процессы" Binding="{Binding Extra}" Width="240" />                                         <DataGridTextColumn Header="Соед." Binding="{Binding Connections}" Width="70" />                                         <DataGridTextColumn Header="Хостов" Binding="{Binding Hosts}" Width="70" />                                         <DataGridTextColumn Header="&#x2193;" Binding="{Binding BytesIn, Converter={StaticResource BytesConverter}}" Width="95" />                                         <DataGridTextColumn Header="&#x2191;" Binding="{Binding BytesOut, Converter={StaticResource BytesConverter}}" Width="95" />                                         <DataGridTextColumn Header="Всего" Binding="{Binding Bytes, Converter={StaticResource BytesConverter}}" Width="100" />                                         <DataGridTextColumn Header="Доля" Binding="{Binding ShareText}" Width="70" />                                     </DataGrid.Columns>                                 </DataGrid>                             </TabItem>
+                            <TabItem Header="Провайдеры (ASN)">                                 <DataGrid ItemsSource="{Binding Asns}" SelectedItem="{Binding SelectedAsn, Mode=TwoWay}" IsReadOnly="True" AutoGenerateColumns="False" ContextMenu="{StaticResource CellCopyMenu}" PreviewMouseRightButtonDown="CopyGrid_PreviewRightButtonDown">                                     <DataGrid.Columns>                                         <DataGridTextColumn Header="Провайдер" Binding="{Binding Name}" Width="*" />                                         <DataGridTextColumn Header="Основные процессы" Binding="{Binding Extra}" Width="240" />                                         <DataGridTextColumn Header="Соед." Binding="{Binding Connections}" Width="70" />                                         <DataGridTextColumn Header="Хостов" Binding="{Binding Hosts}" Width="70" />                                         <DataGridTextColumn Header="&#x2193;" Binding="{Binding BytesIn, Converter={StaticResource BytesConverter}}" Width="95" />                                         <DataGridTextColumn Header="&#x2191;" Binding="{Binding BytesOut, Converter={StaticResource BytesConverter}}" Width="95" />                                         <DataGridTextColumn Header="Всего" Binding="{Binding Bytes, Converter={StaticResource BytesConverter}}" Width="100" />                                         <DataGridTextColumn Header="Доля" Binding="{Binding ShareText}" Width="70" />                                     </DataGrid.Columns>                                 </DataGrid>                             </TabItem>
+                            <TabItem Header="Качество связи">
+                                <DataGrid ItemsSource="{Binding Quality}" SelectedItem="{Binding SelectedQuality, Mode=TwoWay}" IsReadOnly="True" AutoGenerateColumns="False" ContextMenu="{StaticResource CellCopyMenu}" PreviewMouseRightButtonDown="CopyGrid_PreviewRightButtonDown" ToolTip="Где хуже всего: повторные передачи, сбросы и время рукопожатия (RTT). Только TCP.">
+                                    <DataGrid.Columns>
+                                        <DataGridTextColumn Header="Адрес / сайт" Binding="{Binding Name}" Width="*" />
+                                        <DataGridTextColumn Header="Соед." Binding="{Binding Connections}" Width="70" />
+                                        <DataGridTextColumn Header="Средний RTT, мс" Binding="{Binding AvgRttMs, StringFormat=F0}" Width="110" />
+                                        <DataGridTextColumn Header="Повторы, %" Binding="{Binding RetransPercent, StringFormat=F1}" Width="90" />
+                                        <DataGridTextColumn Header="Сбросы (RST)" Binding="{Binding Resets}" Width="100" />
+                                        <DataGridTextColumn Header="Пакеты" Binding="{Binding Packets}" Width="90" />
+                                        <DataGridTextColumn Header="Всего" Binding="{Binding Bytes, Converter={StaticResource BytesConverter}}" Width="100" />
+                                    </DataGrid.Columns>
+                                </DataGrid>
+                            </TabItem>
+                            <TabItem Header="Потоки">
+                                <DataGrid ItemsSource="{Binding Flows}" IsReadOnly="True" AutoGenerateColumns="False" ContextMenu="{StaticResource CellCopyMenu}" PreviewMouseRightButtonDown="CopyGrid_PreviewRightButtonDown" ToolTip="Поток как в NetFlow: длительность, размер пакета, асимметрия, интервалы, RTT, повторы">
+                                    <DataGrid.Columns>
+                                        <DataGridTextColumn Header="Процесс" Binding="{Binding ProcessName}" Width="130" />
+                                        <DataGridTextColumn Header="Удалённый" Binding="{Binding RemoteEndpoint}" Width="*" MinWidth="170" />
+                                        <DataGridTextColumn Header="Протокол" Binding="{Binding AppProtoText}" Width="80" />
+                                        <DataGridTextColumn Header="Страна" Binding="{Binding Country}" Width="60" />
+                                        <DataGridTextColumn Header="Длит." Binding="{Binding DurationText}" Width="70" />
+                                        <DataGridTextColumn Header="Пакетов" Binding="{Binding Packets}" Width="75" />
+                                        <DataGridTextColumn Header="Ср. пакет, Б" Binding="{Binding AvgPacketSize}" Width="90" />
+                                        <DataGridTextColumn Header="Исходящих" Binding="{Binding OutShare, StringFormat=P0}" Width="85" />
+                                        <DataGridTextColumn Header="Интервал, мс" Binding="{Binding IatMeanMs, StringFormat=F0}" Width="95" />
+                                        <DataGridTextColumn Header="Разброс" Binding="{Binding IatCv, StringFormat=F2}" Width="75" />
+                                        <DataGridTextColumn Header="RTT" Binding="{Binding RttText}" Width="70" />
+                                        <DataGridTextColumn Header="Повторы" Binding="{Binding Retransmits}" Width="70" />
+                                        <DataGridTextColumn Header="RST" Binding="{Binding Resets}" Width="55" />
+                                        <DataGridTextColumn Header="Всего" Binding="{Binding Bytes, Converter={StaticResource BytesConverter}}" Width="90" />
                                     </DataGrid.Columns>
                                 </DataGrid>
                             </TabItem>
@@ -771,6 +810,49 @@
                     </Grid>
                 </TabItem>
 
+                <TabItem Header="История" IsSelected="{Binding History.IsActive, Mode=TwoWay}">
+                    <Grid DataContext="{Binding History}" Margin="6">
+                        <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+                            <TextBlock Text="Период:" VerticalAlignment="Center" Margin="0,0,6,0" Foreground="{DynamicResource MutedBrush}" />
+                            <ComboBox Width="110" ItemsSource="{Binding PeriodOptions}" SelectedItem="{Binding SelectedPeriod}" />
+                            <TextBlock Text="Поиск:" VerticalAlignment="Center" Margin="14,0,6,0" Foreground="{DynamicResource MutedBrush}" />
+                            <TextBox Width="240" Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged, Delay=300}" ToolTip="Процесс, адрес, домен, категория, страна, провайдер, протокол или текст события" />
+                            <Button Content="Обновить" Command="{Binding RefreshCommand}" Style="{DynamicResource GhostButton}" Margin="8,0,0,0" />
+                            <Button Content="Отчёт за 7 дней" Command="{Binding ReportCommand}" Margin="4,0,0,0" ToolTip="Собрать HTML-отчёт (топ процессов, сайтов, стран, качество связи, события) и открыть в браузере" />
+                            <TextBlock Text="{Binding Summary}" VerticalAlignment="Center" Margin="12,0,0,0" Foreground="{DynamicResource MutedBrush}" />
+                        </StackPanel>
+                        <TabControl Grid.Row="1">
+                            <TabItem Header="Соединения">
+                                <DataGrid ItemsSource="{Binding Flows}" IsReadOnly="True" AutoGenerateColumns="False" ContextMenu="{StaticResource CellCopyMenu}" PreviewMouseRightButtonDown="CopyGrid_PreviewRightButtonDown">
+                                    <DataGrid.Columns>
+                                        <DataGridTextColumn Header="Последний" Binding="{Binding LastSeen}" Width="140" />
+                                        <DataGridTextColumn Header="Процесс" Binding="{Binding Process}" Width="130" />
+                                        <DataGridTextColumn Header="Адрес / сайт" Binding="{Binding Name}" Width="*" MinWidth="200" />
+                                        <DataGridTextColumn Header="Протокол" Binding="{Binding AppProto}" Width="80" />
+                                        <DataGridTextColumn Header="Категория" Binding="{Binding Category}" Width="160" />
+                                        <DataGridTextColumn Header="Страна" Binding="{Binding Country}" Width="60" />
+                                        <DataGridTextColumn Header="Провайдер (ASN)" Binding="{Binding Asn}" Width="170" />
+                                        <DataGridTextColumn Header="&#x2193;" Binding="{Binding BytesIn, Converter={StaticResource BytesConverter}}" Width="85" />
+                                        <DataGridTextColumn Header="&#x2191;" Binding="{Binding BytesOut, Converter={StaticResource BytesConverter}}" Width="85" />
+                                        <DataGridTextColumn Header="RTT" Binding="{Binding RttText}" Width="65" />
+                                        <DataGridTextColumn Header="Повторы" Binding="{Binding Retransmits}" Width="70" />
+                                    </DataGrid.Columns>
+                                </DataGrid>
+                            </TabItem>
+                            <TabItem Header="События">
+                                <DataGrid ItemsSource="{Binding Events}" IsReadOnly="True" AutoGenerateColumns="False" ContextMenu="{StaticResource CellCopyMenu}" PreviewMouseRightButtonDown="CopyGrid_PreviewRightButtonDown">
+                                    <DataGrid.Columns>
+                                        <DataGridTextColumn Header="Время" Binding="{Binding Time}" Width="140" />
+                                        <DataGridTextColumn Header="Уровень" Binding="{Binding Severity}" Width="90" />
+                                        <DataGridTextColumn Header="Событие" Binding="{Binding Title}" Width="260" />
+                                        <DataGridTextColumn Header="Сообщение" Binding="{Binding Message}" Width="*" />
+                                    </DataGrid.Columns>
+                                </DataGrid>
+                            </TabItem>
+                        </TabControl>
+                    </Grid>
+                </TabItem>
                 <TabItem Header="Имена адресов">
                     <Grid DataContext="{Binding IpNames}" Margin="6">
                         <Grid.RowDefinitions>

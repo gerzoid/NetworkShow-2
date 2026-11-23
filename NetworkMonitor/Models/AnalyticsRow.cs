@@ -16,6 +16,10 @@ public sealed class AnalyticsRow
     public long BytesIn { get; init; }
     public long BytesOut { get; init; }
     public double Share { get; init; }
+    /// <summary>Только для «Качества связи»: средний RTT рукопожатия, доля повторных передач и число сбросов.</summary>
+    public double AvgRttMs { get; init; }
+    public double RetransPercent { get; init; }
+    public long Resets { get; init; }
     public DateTime FirstSeen { get; init; }
     public DateTime LastSeen { get; init; }
     /// <summary>Соединения группы (по убыванию объёма, до 500) — для панели детализации.</summary>

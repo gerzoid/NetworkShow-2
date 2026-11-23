@@ -26,6 +26,8 @@ public struct PacketHeaders
     public int PayloadLength;
     /// <summary>Флаги TCP (байт 13 заголовка): SYN=0x02, ACK=0x10, RST=0x04, FIN=0x01.</summary>
     public byte TcpFlags;
+    /// <summary>Порядковый номер TCP (для поиска повторных передач).</summary>
+    public uint TcpSeq;
 
     public readonly bool IsTcp => Protocol == PacketHeaderParser.ProtoTcp;
     public readonly bool IsUdp => Protocol == PacketHeaderParser.ProtoUdp;
@@ -166,6 +168,7 @@ public static class PacketHeaderParser
             h.SourcePort = BinaryPrimitives.ReadUInt16BigEndian(frame[start..]);
             h.DestinationPort = BinaryPrimitives.ReadUInt16BigEndian(frame[(start + 2)..]);
             h.TcpFlags = frame[start + 13];
+            h.TcpSeq = BinaryPrimitives.ReadUInt32BigEndian(frame[(start + 4)..]);
             int dataOffset = (frame[start + 12] >> 4) * 4;
             if (dataOffset >= 20 && start + dataOffset <= end)
             {

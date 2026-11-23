@@ -19,6 +19,13 @@ public sealed class PacketRecord
     public byte TcpFlags { get; init; }
     /// <summary>Имя из DNS-запроса (UDP/53), только при включённом сборе сайтов.</summary>
     public string? DnsName { get; init; }
+    /// <summary>Порядковый номер TCP и длина данных — для метрик качества (повторные передачи).</summary>
+    public uint TcpSeq { get; init; }
+    public int PayloadLength { get; init; }
+    /// <summary>Протокол, определённый по содержимому (ssh, rdp, bittorrent, wireguard, openvpn, tls…), а не по порту.</summary>
+    public string? AppProto { get; init; }
+    /// <summary>JA3-отпечаток TLS-клиента (MD5) — только в пакете ClientHello.</summary>
+    public string? Ja3 { get; init; }
 
     public string TimeText => Timestamp.ToString("HH:mm:ss.fff");
     public string DirectionText => Direction == TrafficDirection.Outbound ? "↑" : "↓";

@@ -87,6 +87,9 @@ public sealed class DetectionSettings
     public int FailedLogonThreshold { get; set; } = 5;
     /// <summary>Первый запуск: сколько минут «обучения» без тревог о новых процессах.</summary>
     public int LearningMinutes { get; set; } = 10;
+    /// <summary>Тихие часы (локальное время): сетевые входы в это время считаются подозрительнее. Равные значения — выключено.</summary>
+    public int QuietHoursStart { get; set; } = 0;
+    public int QuietHoursEnd { get; set; } = 6;
 }
 
 public static class SettingsService

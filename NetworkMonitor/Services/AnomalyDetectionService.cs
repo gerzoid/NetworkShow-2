@@ -88,7 +88,7 @@ public sealed class AnomalyDetectionService : IDisposable
                 ? Clock() + S.LearningMinutes * 60_000L
                 : 0;
             _listeners = null;
-            _timer = new Timer(_ => Tick(), null, 1000, 30_000);
+            _timer = new Timer(_ => Tick(), null, 1000, 10_000);
         }
     }
 
@@ -117,6 +117,9 @@ public sealed class AnomalyDetectionService : IDisposable
         long now = Clock();
         bool tcp = r.Protocol == "TCP";
         bool syn = tcp && (r.TcpFlags & 0x12) == 0x02;
+
+        if (r.AppProto is not null || r.Ja3 is not null)
+            lock (_gate) InspectApp(r, now);
 
         if (r.DnsName is not null)
         {
@@ -203,6 +206,77 @@ public sealed class AnomalyDetectionService : IDisposable
                     $"{process}: {baseDomain} — {t.Names.Count} уникальных поддоменов за минуту" +
                     (longName ? ", есть очень длинные имена" : string.Empty));
             }
+        }
+    }
+
+    private readonly Dictionary<string, long> _appAlerted = new();
+
+    private bool Once(string key, long now, long ttlMs)
+    {
+        if (_appAlerted.TryGetValue(key, out var last) && now - last < ttlMs) return false;
+        if (_appAlerted.Count >= MaxEntries) _appAlerted.Clear();
+        _appAlerted[key] = now;
+        return true;
+    }
+
+    /// <summary>
+    /// Протокол, определённый по содержимому, и отпечаток JA3: вредоносный JA3, SSH/RDP на нестандартном порту, BitTorrent,
+    /// VPN-протоколы, Telnet/FTP открытым текстом, SMB в интернет, признак Tor.
+    /// </summary>
+    private void InspectApp(PacketRecord r, long now)
+    {
+        bool outbound = r.Direction == TrafficDirection.Outbound;
+        bool inbound = r.Direction == TrafficDirection.Inbound;
+        if (!outbound && !inbound) return;
+
+        string remoteIp = outbound ? r.DestinationIp : r.SourceIp;
+        if (string.IsNullOrEmpty(remoteIp) || _notify.IsWhitelisted(remoteIp)) return;
+        int remotePort = outbound ? r.DestinationPort : r.SourcePort;
+        int localPort = outbound ? r.SourcePort : r.DestinationPort;
+        string proc = string.IsNullOrEmpty(r.ProcessName) ? "unknown" : r.ProcessName;
+        string target = $"{remoteIp}:{remotePort}";
+
+        if (outbound && r.Ja3 is not null && Ja3Blocklist.Lookup(r.Ja3) is { } reason &&
+            Once("ja3|" + proc + "|" + r.Ja3, now, 3_600_000))
+        {
+            _notify.RaiseExternal(NotificationSeverity.Warning, "TLS-отпечаток из списка вредоносных (JA3)",
+                $"{proc} → {target}: отпечаток {r.Ja3} числится за «{reason}». Список abuse.ch устарел (2021 г.) и даёт ложные срабатывания на обычное ПО — проверьте процесс.");
+        }
+
+        switch (r.AppProto)
+        {
+            case ProtocolSniffer.Ssh when outbound && remotePort != 22:
+                if (Once("ssh|" + proc + "|" + target, now, 3_600_000))
+                    _notify.RaiseExternal(NotificationSeverity.Info, "SSH на нестандартном порту", $"{proc} → {target}: по содержимому это SSH, а не {remotePort}.");
+                break;
+            case ProtocolSniffer.Rdp when remotePort != 3389 && localPort != 3389:
+                if (Once("rdp|" + proc + "|" + target, now, 3_600_000))
+                    _notify.RaiseExternal(NotificationSeverity.Warning, "RDP на нестандартном порту", $"{proc} ↔ {target}: по содержимому это удалённый рабочий стол (RDP). Нестандартный порт часто используют, чтобы спрятать доступ.");
+                break;
+            case ProtocolSniffer.BitTorrent:
+                if (Once("bt|" + proc, now, 21_600_000))
+                    _notify.RaiseExternal(NotificationSeverity.Info, "Обнаружен трафик BitTorrent", $"{proc} ↔ {target}.");
+                break;
+            case ProtocolSniffer.WireGuard or ProtocolSniffer.OpenVpn:
+                if (Once("vpn|" + proc + "|" + r.AppProto + "|" + remoteIp, now, 21_600_000))
+                    _notify.RaiseExternal(NotificationSeverity.Info, "VPN-протокол", $"{proc} ↔ {target}: {(r.AppProto == ProtocolSniffer.WireGuard ? "WireGuard" : "OpenVPN")}.");
+                break;
+            case ProtocolSniffer.Telnet when outbound:
+                if (Once("telnet|" + target, now, 3_600_000))
+                    _notify.RaiseExternal(NotificationSeverity.Warning, "Telnet: данные открытым текстом", $"{proc} → {target}: пароли и команды передаются без шифрования.");
+                break;
+            case ProtocolSniffer.Ftp when outbound:
+                if (Once("ftp|" + target, now, 21_600_000))
+                    _notify.RaiseExternal(NotificationSeverity.Info, "FTP без шифрования", $"{proc} → {target}: логин и пароль FTP видны в сети.");
+                break;
+            case ProtocolSniffer.Smb when outbound && !IsPrivate(remoteIp):
+                if (Once("smb|" + remoteIp, now, 3_600_000))
+                    _notify.RaiseExternal(NotificationSeverity.Warning, "SMB в интернет", $"{proc} → {target}: общие папки Windows не должны уходить в интернет.");
+                break;
+            case ProtocolSniffer.Tls when outbound && ProtocolSniffer.LooksLikeTorSni(r.Sni):
+                if (Once("tor|" + proc, now, 21_600_000))
+                    _notify.RaiseExternal(NotificationSeverity.Warning, "Похоже на трафик Tor", $"{proc} → {target}: TLS со случайным именем «{r.Sni}», как у ретрансляторов Tor (эвристика).");
+                break;
         }
     }
 
@@ -490,14 +564,45 @@ public sealed class AnomalyDetectionService : IDisposable
         try { SaveKnown(); } catch { }
     }
 
-    private void CheckListeners()
+    /// <summary>Источник слушающих TCP-портов (подменяется в тестах).</summary>
+    internal Func<List<(System.Net.IPAddress Address, int Port)>> ListenerSource { get; set; } = () =>
+        IPGlobalProperties.GetIPGlobalProperties().GetActiveTcpListeners().Select(e => (e.Address, e.Port)).ToList();
+
+    /// <summary>Таблица TCP с PID владельцев (подменяется в тестах).</summary>
+    internal Func<List<TcpTableReader.Row>> TcpRows { get; set; } = TcpTableReader.Read;
+
+    /// <summary>Имя и путь процесса по PID (подменяется в тестах).</summary>
+    internal Func<int, (string? Name, string? Path)> ProcessInfo { get; set; } =
+        pid => (NativeProcess.TryGetProcessName(pid), NativeProcess.TryGetImagePath(pid));
+
+    /// <summary>Кто слушает порт: имя, PID и путь к файлу; null — владельца найти не удалось (процесс уже завершился).</summary>
+    internal (string Who, string Details)? DescribeOwner(List<TcpTableReader.Row> rows, System.Net.IPAddress address, int port)
     {
-        var current = new HashSet<string>();
-        foreach (var ep in IPGlobalProperties.GetIPGlobalProperties().GetActiveTcpListeners())
+        // Слушающие сокеты в таблице — те, у которых удалённый конец пуст (порт 0)
+        var listening = rows.Where(r => r.RemotePort == 0 && r.LocalPort == port && r.Pid > 0).ToList();
+        var row = listening.FirstOrDefault(r => r.LocalAddr.Equals(address));
+        if (row.Pid == 0) row = listening.FirstOrDefault();
+        if (row.Pid == 0) return null;
+
+        if (row.Pid == 4) return ("System (PID 4)", "Это ядро Windows: порт открыла системная служба, например SMB (445) или HTTP.sys.");
+        var (name, path) = ProcessInfo(row.Pid);
+        var who = $"{(string.IsNullOrEmpty(name) ? "неизвестный процесс" : name)} (PID {row.Pid})";
+        var details = new List<string>();
+        if (!string.IsNullOrEmpty(path)) details.Add($"Файл: {path}");
+        if (string.Equals(name, "svchost", StringComparison.OrdinalIgnoreCase) || string.Equals(name, "svchost.exe", StringComparison.OrdinalIgnoreCase))
+            details.Add("Это системная служба Windows.");
+        return (who, string.Join(" ", details));
+    }
+
+    internal void CheckListeners()
+    {
+        var endpoints = new Dictionary<string, (System.Net.IPAddress Address, int Port)>();
+        foreach (var (addr, port) in ListenerSource())
         {
-            if (System.Net.IPAddress.IsLoopback(ep.Address)) continue;
-            current.Add(ep.Address + ":" + ep.Port);
+            if (System.Net.IPAddress.IsLoopback(addr)) continue;
+            endpoints[addr + ":" + port] = (addr, port);
         }
+        var current = new HashSet<string>(endpoints.Keys);
 
         List<string>? added = null;
         lock (_gate)
@@ -508,9 +613,16 @@ public sealed class AnomalyDetectionService : IDisposable
             _listeners = current;
         }
         if (added is null || !S.Enabled) return;
+        var rows = TcpRows();
         foreach (var l in added.Take(5))
+        {
+            var (addr, port) = endpoints[l];
+            var owner = DescribeOwner(rows, addr, port);
             _notify.RaiseExternal(NotificationSeverity.Warning, "Новый слушающий порт",
-                $"Приложение открыло порт для входящих подключений: {l}");
+                owner is null
+                    ? $"Порт {l} открыт для входящих подключений, но владельца определить не удалось (процесс мог уже завершиться)."
+                    : $"Процесс {owner.Value.Who} открыл порт {l} для входящих подключений. {owner.Value.Details}".TrimEnd());
+        }
         if (added.Count > 5)
             _notify.RaiseExternal(NotificationSeverity.Warning, "Новые слушающие порты", $"…и ещё {added.Count - 5}");
     }
@@ -527,6 +639,7 @@ public sealed class AnomalyDetectionService : IDisposable
             SweepDict(_exposed, v => v, now, 900_000);
             SweepDict(_lolbinAlerted, v => v, now, 7_200_000);
             SweepDict(_encDnsAlerted, v => v, now, 7_200_000);
+            SweepDict(_appAlerted, v => v, now, 21_600_000);
             SweepDict(_dgaByProc, s => s.Last, now, 900_000);
             SweepDict(_tunnels, s => s.Last, now, 900_000);
         }
